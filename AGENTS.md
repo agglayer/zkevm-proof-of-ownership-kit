@@ -75,15 +75,17 @@ plain and step-by-step.
 - `recovery-tx/` — `impersonate-and-move.template.sh` (annotated template), `run.sh` (runs a
   case's `move.sh` against the fork), `list-impersonated.sh` (derives senders from receipts and
   verifies a case's `signatures.json`).
-- `ownership-proof/` — `message-template.txt` (the fixed proof message) and `sign-message.sh`
+- `ownership-proof/` — `message-template.txt` (the fixed proof message), `sign-message.sh`
   (EIP-191 signing via hardware wallet / keystore / hidden prompt, or `--print-message` for
-  Etherscan Verified Signatures).
+  Etherscan Verified Signatures), and `verify-signature.sh` (verifies every entry of a
+  `signatures.json`; the single source of the signature rules, also called by
+  `list-impersonated.sh`).
 - `cases/` — `_template/` is copied to `cases/<case-id>/` per stakeholder (`README.md`, `move.sh`,
   `signatures.json`).
 - `submission/SUBMIT.md` — checklist of what the stakeholder sends back to Polygon.
 
-`setup/verify-fork-state.js` and `ownership-proof/verify-signature.js` appear in the README layout
-but are **not implemented yet** — don't reference them as if they exist.
+Fork-state verification lives inside `setup/fork.sh` (it refuses to start unless the RPC's
+latest block is the halt block); there is no separate verifier for it.
 
 ## Tech Stack
 
@@ -110,6 +112,7 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 
 # 4. Check every sender is covered and every signature is valid
 ./recovery-tx/list-impersonated.sh --signatures cases/<case-id>/signatures.json <tx-hash> ...
+#    (signatures only, no fork needed: ./ownership-proof/verify-signature.sh cases/<case-id>/signatures.json)
 
 # 5. Package per submission/SUBMIT.md
 ```
@@ -129,8 +132,10 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
   run; don't change it or relax the check.
 - **RPC responses are untrusted input.** Validate them (e.g. regex-check hex quantities) before
   using them in arithmetic or commands — Bash `$(( ))` evaluates variable contents recursively.
-- **A signature only counts if it verifies.** An entry must name its own address in `message`,
-  and `cast wallet verify` must recover that address from `signature`.
+- **A signature only counts if it verifies.** `verify-signature.sh` requires `message` to be
+  exactly the template filled in with the entry's own address, `cast wallet verify` to recover
+  that address from `signature`, one shared nonce per file, and no duplicate addresses. Keep
+  these rules in that one script — don't reimplement them elsewhere.
 
 ## Conventions
 
@@ -185,12 +190,12 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 
 ## Maintenance Matrix
 
-|               When this changes…               |                                 Also update…                                 |
-| :--------------------------------------------: | :--------------------------------------------------------------------------: |
-|     `ownership-proof/message-template.txt`     |   `README.md` (Message format), `cases/_template/README.md` example entry    |
-|      `sign-message.sh` flags or env vars       |    `README.md`, `cases/_template/README.md`, `AGENTS.md` workflow section    |
-|    `list-impersonated.sh` checks or output     |   `cases/_template/README.md` step 4, `submission/SUBMIT.md`, `AGENTS.md`    |
-|          `fork.sh` behavior or output          | `README.md` (Running the shadow-fork), `submission/SUBMIT.md` fork-logs item |
-| `recovery-tx/impersonate-and-move.template.sh` |                `cases/_template/move.sh` (keep them in sync)                 |
-|        Files added/removed/implemented         |      `README.md` layout + Status note, `AGENTS.md` Repository Structure      |
-|            What stakeholders submit            |          `submission/SUBMIT.md`, `cases/_template/README.md` step 5          |
+|                        When this changes…                       |                                                                    Also update…                                                                   |
+| :-------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------------------------------: |
+|              `ownership-proof/message-template.txt`             | `README.md` (Message format), `cases/_template/README.md` example entry, `verify-signature.sh` (assumes placeholder order address → nonce → date) |
+|               `sign-message.sh` flags or env vars               |                                       `README.md`, `cases/_template/README.md`, `AGENTS.md` workflow section                                      |
+| `list-impersonated.sh` / `verify-signature.sh` checks or output |                                      `cases/_template/README.md` step 4, `submission/SUBMIT.md`, `AGENTS.md`                                      |
+|                   `fork.sh` behavior or output                  |                                    `README.md` (Running the shadow-fork), `submission/SUBMIT.md` fork-logs item                                   |
+|          `recovery-tx/impersonate-and-move.template.sh`         |                                                   `cases/_template/move.sh` (keep them in sync)                                                   |
+|                 Files added/removed/implemented                 |                                                `README.md` layout, `AGENTS.md` Repository Structure                                               |
+|                     What stakeholders submit                    |                                             `submission/SUBMIT.md`, `cases/_template/README.md` step 5                                            |

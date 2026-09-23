@@ -39,7 +39,8 @@ Before packaging any of this, run
 [`recovery-tx/list-impersonated.sh --signatures cases/<your-case-id>/signatures.json <tx-hash> ...`](../recovery-tx/list-impersonated.sh)
 with every tx hash from `recovery-tx/run.sh` — it derives the impersonated addresses
 from the transactions' own mined receipts, verifies every signature in
-`signatures.json`, and fails loudly if any entry is invalid or any EOA sender is still
+`signatures.json` with `ownership-proof/verify-signature.sh` (the same check Polygon runs
+on your submission), and fails loudly if any entry is invalid or any EOA sender is still
 missing a signature. It lists contract senders separately, since those are covered by
 their controllers' signatures. It only checks senders, so it can't catch a missing
 signature for your destination EOA — double-check that one yourself.

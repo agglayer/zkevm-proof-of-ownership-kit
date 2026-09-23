@@ -8,7 +8,7 @@ Polygon zkEVM mainnet is halted. Some stakeholders have funds locked in Smart Co
 on zkEVM mainnet that cannot be recovered through the standard exit-certificate tool,
 because:
 
-- The exit-certificate tool only covers EOA (externally-owned account) balances natively.
+- The [exit-certificate tool](https://github.com/agglayer/aggkit/tree/develop/tools/exit_certificate) only covers EOA (externally-owned account) balances natively.
 - Funds held by a Smart Contract are not included in the certificate — a contract's own
   fixed methods generally can't call a third-party `claimAsset`, and the contract itself
   may be immutable.
@@ -45,8 +45,7 @@ zkevm-proof-of-ownership-kit/
 ├── README.md                          # this file
 ├── setup/
 │   ├── fork.sh                        # spins up the shadow-fork against zkEVM mainnet state
-│   ├── .env.example                   # RPC endpoint, Anvil port, block time overrides
-│   └── verify-fork-state.js           # confirms the fork started at the correct block/state
+│   └── .env.example                   # RPC endpoint, Anvil port, block time overrides
 ├── recovery-tx/
 │   ├── impersonate-and-move.template.sh   # annotated template: impersonate the
 │   │                                        # relevant addresses and move funds to an EOA
@@ -57,7 +56,8 @@ zkevm-proof-of-ownership-kit/
 │   ├── message-template.txt            # fixed message format, for consistent signatures
 │   ├── sign-message.sh                 # signs the message via ledger/keystore/prompt for
 │   │                                     # one address and appends it to a signatures.json
-│   └── verify-signature.js             # used on Polygon's side to verify submitted signatures
+│   └── verify-signature.sh             # verifies every entry of a signatures.json (run by
+│                                         # Polygon on submission; run it yourself first)
 ├── cases/
 │   ├── README.md                       # how to start a new case from the template
 │   └── _template/                      # copy this to cases/<your-case-id>/
@@ -67,12 +67,6 @@ zkevm-proof-of-ownership-kit/
 └── submission/
     └── SUBMIT.md                       # checklist of what to submit back to Polygon
 ```
-
-> **Status:** this repo is under active construction. `setup/fork.sh`,
-> `setup/.env.example`, `recovery-tx/`, `ownership-proof/sign-message.sh`,
-> `ownership-proof/message-template.txt`, and `cases/_template/` are implemented.
-> `setup/verify-fork-state.js` and `ownership-proof/verify-signature.js` (Polygon's-side
-> verification tool) are not implemented yet.
 
 ## Who needs a signature
 

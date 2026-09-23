@@ -5,17 +5,18 @@
 # tracked as queryable state by Anvil, but a mined tx's `from` field always tells you
 # who sent it, which is what actually matters here.
 #
-# With --signatures <path>, also verifies every entry in that case's signatures.json
-# (the message names the entry's address and the signature recovers to it) and
-# cross-checks that every EOA sender has a valid entry, failing loudly listing whichever
-# is invalid or missing — run this before filling out submission/SUBMIT.md. Contract
-# senders can't sign, so they are listed separately instead.
+# With --signatures <path>, also verifies that case's signatures.json with
+# ownership-proof/verify-signature.sh and cross-checks that every EOA sender has an
+# entry, failing loudly listing whichever is invalid or missing — run this before
+# filling out submission/SUBMIT.md. Contract senders can't sign, so they are listed
+# separately instead.
 #
 # Usage:
 #   recovery-tx/list-impersonated.sh <tx-hash> [<tx-hash> ...]
 #   recovery-tx/list-impersonated.sh --signatures cases/<case-id>/signatures.json <tx-hash> [<tx-hash> ...]
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RPC_URL="${RPC_URL:-http://127.0.0.1:8545}"
 
 for bin in cast jq; do
@@ -59,45 +60,16 @@ if [ -z "${signatures_path}" ]; then
 fi
 
 echo
-echo "Cross-checking against ${signatures_path} ..."
-if [ ! -f "${signatures_path}" ]; then
-    echo "Error: ${signatures_path} not found." >&2
-    exit 1
-fi
+echo "Verifying ${signatures_path} ..."
+invalid=0
+"${script_dir}/../ownership-proof/verify-signature.sh" "${signatures_path}" || invalid=1
 
-if ! jq -e 'type == "array"' "${signatures_path}" >/dev/null 2>&1; then
-    echo "Error: ${signatures_path} is not a JSON array." >&2
-    exit 1
-fi
+echo
+echo "Cross-checking senders against ${signatures_path} ..."
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# An entry only counts if its message names its own address and its signature
-# recovers to that address.
-verified=""
-invalid=0
-while IFS= read -r entry; do
-    [ -z "${entry}" ] && continue
-    e_addr="$(jq -r '.address // ""' <<<"${entry}")"
-    e_msg="$(jq -r '.message // ""' <<<"${entry}")"
-    e_sig="$(jq -r '.signature // ""' <<<"${entry}")"
-    if ! [[ "${e_addr}" =~ ^0x[0-9a-fA-F]{40}$ ]] || [ -z "${e_msg}" ] || ! [[ "${e_sig}" =~ ^0x[0-9a-fA-F]{130}$ ]]; then
-        echo "INVALID entry (needs address, message and a 65-byte signature): ${entry}" >&2
-        invalid=1
-        continue
-    fi
-    if [[ "$(lower "${e_msg}")" != *"$(lower "${e_addr}")"* ]]; then
-        echo "INVALID entry for ${e_addr}: message does not name that address." >&2
-        invalid=1
-        continue
-    fi
-    if ! cast wallet verify --address "${e_addr}" "${e_msg}" "${e_sig}" >/dev/null 2>&1; then
-        echo "INVALID entry for ${e_addr}: signature does not recover to that address." >&2
-        invalid=1
-        continue
-    fi
-    verified+="$(lower "${e_addr}")"$'\n'
-done < <(jq -c '.[]' "${signatures_path}")
+signed="$(jq -r '.[]?.address? // empty' "${signatures_path}" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
 
 missing=0
 contracts=""
@@ -108,8 +80,8 @@ while IFS= read -r addr; do
         contracts+="${addr}"$'\n'
         continue
     fi
-    if ! grep -Fxq "$(lower "${addr}")" <<<"${verified}"; then
-        echo "MISSING valid signature for ${addr}" >&2
+    if ! grep -Fxq "$(lower "${addr}")" <<<"${signed}"; then
+        echo "MISSING signature for ${addr}" >&2
         missing=1
     fi
 done <<<"${unique}"
