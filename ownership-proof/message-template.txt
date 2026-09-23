@@ -1,0 +1,1 @@
+I confirm ownership of <address> for zkEVM fund recovery — nonce: <nonce> — date: <date>
