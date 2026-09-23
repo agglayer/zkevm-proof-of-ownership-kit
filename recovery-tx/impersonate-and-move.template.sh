@@ -44,4 +44,4 @@ cast send --unlocked --from "${OWNER_ADDRESS}" "${LOCKED_CONTRACT}" \
 echo
 echo "Note the transactionHash printed above — you'll need it for submission."
 echo "Every address impersonated above, plus the destination EOA, now needs a"
-echo "signature — see ../../ownership-proof/ and README.md in this directory."
+echo "signature — see ownership-proof/ and cases/<your-case-id>/README.md."

@@ -24,8 +24,9 @@ It walks you through three steps:
 2. **Impersonate** whatever addresses are needed (the Smart Contract, its owner(s),
    signers, etc.) on that fork to simulate the transactions that would move your locked
    funds to a destination EOA you control.
-3. **Prove ownership** by signing a fixed message with the real private key of every
-   address that was impersonated in step 2 — including the final destination EOA.
+3. **Prove ownership** by signing a fixed message with the real key of every EOA that
+   was impersonated in step 2 (or that controls an impersonated contract) — including
+   the final destination EOA.
 
 Step 3 is the critical gate. Impersonating an address on a local fork does **not** prove
 you control it — anyone can impersonate any address on a fork they run themselves. The
@@ -54,7 +55,7 @@ zkevm-proof-of-ownership-kit/
 │                                          # cross-checks them against a case's signatures.json
 ├── ownership-proof/
 │   ├── message-template.txt            # fixed message format, for consistent signatures
-│   ├── sign-message.sh                 # signs the message with the real private key of
+│   ├── sign-message.sh                 # signs the message via ledger/keystore/prompt for
 │   │                                     # one address and appends it to a signatures.json
 │   └── verify-signature.js             # used on Polygon's side to verify submitted signatures
 ├── cases/
@@ -75,11 +76,15 @@ zkevm-proof-of-ownership-kit/
 
 ## Who needs a signature
 
-Every address impersonated during the shadow-fork simulation — the Smart Contract
-itself where applicable, plus any owner(s)/signer(s) impersonated to authorize the fund
-movement — **and** the final destination EOA that receives the recovered funds. If your
-case involves multiple owners or a multisig, every impersonated signer needs to submit
-their own signature.
+Every EOA impersonated during the shadow-fork simulation — the owner(s)/signer(s)
+impersonated to authorize the fund movement — **and** the final destination EOA that
+receives the recovered funds. If your case involves multiple owners or a multisig, every
+impersonated signer needs to submit their own signature.
+
+A contract has no private key and cannot sign. If the simulation impersonates a
+contract directly, its ownership is proven by signatures from the EOA(s) that control it
+on-chain (owner, multisig signers, admin), together with an explanation of that control
+path in your submission.
 
 ## Message format
 
@@ -91,7 +96,15 @@ I confirm ownership of <address> for zkEVM fund recovery — nonce: <nonce> — 
 ```
 
 Use `ownership-proof/sign-message.sh` to produce each signature — do not sign an ad-hoc
-message on your own, as it will not match what Polygon's verification step expects.
+message on your own, as it will not match what Polygon's verification step expects. It
+signs through `cast` with a hardware wallet (`--ledger` / `--trezor`), a Foundry keystore
+(`--account`), or a hidden key prompt (`--interactive`); raw private keys on the command
+line are refused.
+
+No terminal, or a cold wallet only usable from the browser? Print the exact message with
+`sign-message.sh --print-message` and sign it at
+[etherscan.io/verifiedSignatures](https://etherscan.io/verifiedSignatures) instead — see
+[`cases/_template/README.md`](cases/_template/README.md).
 
 ## Prerequisites
 

@@ -34,18 +34,33 @@ Note the transaction hash it prints — you'll need it for submission.
 
 ## 3. Sign the ownership-proof message
 
-For every address impersonated in `move.sh`, **and** for your destination EOA, run
-(from your case directory):
-
-```bash
-PRIVATE_KEY=0x... NONCE=<pick-one-nonce-and-reuse-it-for-this-case> \
-  ../../ownership-proof/sign-message.sh signatures.json
-```
+For every EOA impersonated in `move.sh`, **and** for your destination EOA, sign the
+proof message. Contracts impersonated in `move.sh` have no private key — sign instead
+with the EOA(s) that control them on-chain (owner, multisig signers, admin).
 
 Use the exact same `NONCE` for every signature in this case — it's what lets Polygon
-match all the signatures to the same submission. Never pass `PRIVATE_KEY` as a CLI
-argument or commit it anywhere; it's only read from the environment for this one
-command, address by address.
+match all the signatures to the same submission.
+
+**Option A — with this kit (from the repo root).** Pick the signer flag that matches
+where the key lives; the key itself is never passed on the command line:
+
+```bash
+ADDRESS=0x... NONCE=<pick-one-nonce-and-reuse-it-for-this-case> \
+  ./ownership-proof/sign-message.sh cases/<your-case-id>/signatures.json --ledger
+# or: --trezor | --account <foundry-keystore-name> | --interactive (hidden key prompt)
+```
+
+**Option B — without a terminal (e.g. a hardware wallet in the browser).** Print the
+exact message, then sign it at [etherscan.io/verifiedSignatures](https://etherscan.io/verifiedSignatures)
+with the wallet that owns the address:
+
+```bash
+ADDRESS=0x... NONCE=<same-nonce> ./ownership-proof/sign-message.sh --print-message
+```
+
+Paste the message verbatim (don't retype it), publish the signature, and add an entry
+to `signatures.json` with that exact message and the signature hash Etherscan shows.
+Keep the Etherscan link for your submission.
 
 `signatures.json` in this directory ends up with one entry per address:
 
@@ -67,10 +82,12 @@ From the repo root, pass every tx hash `move.sh` printed:
 ./recovery-tx/list-impersonated.sh --signatures cases/<your-case-id>/signatures.json <tx-hash> [<tx-hash> ...]
 ```
 
-This reads each transaction's mined receipt to find who actually sent it, and fails
-loudly if any of those addresses is still missing from `signatures.json`. It only
-checks senders, though — it can't know about your destination EOA (it never sends
-anything), so that signature is still on you to remember.
+This reads each transaction's mined receipt to find who actually sent it, verifies
+every signature in `signatures.json`, and fails loudly if any entry is invalid or any
+EOA sender is still missing. Contract senders are listed separately, as a reminder to
+cover them with their controlling EOAs' signatures. It only checks senders, though —
+it can't know about your destination EOA (it never sends anything), so that signature
+is still on you to remember.
 
 ## 5. Submit
 

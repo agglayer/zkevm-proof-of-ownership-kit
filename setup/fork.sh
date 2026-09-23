@@ -38,8 +38,12 @@ if [ -z "${hex_block}" ] || [ "${hex_block}" = "null" ]; then
     echo "Error: could not fetch eth_blockNumber from ${L2_RPC_URL}" >&2
     exit 1
 fi
+if ! [[ "${hex_block}" =~ ^0x[0-9a-fA-F]{1,16}$ ]]; then
+    echo "Error: eth_blockNumber from ${L2_RPC_URL} is not a hex quantity: ${hex_block}" >&2
+    exit 1
+fi
 
-latest_block="$((hex_block))"
+latest_block="$((16#${hex_block#0x}))"
 echo "Latest published block on the network: ${latest_block} (${hex_block})"
 
 if [ "${fork_block}" -ne "${latest_block}" ]; then

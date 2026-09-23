@@ -5,9 +5,11 @@
 # tracked as queryable state by Anvil, but a mined tx's `from` field always tells you
 # who sent it, which is what actually matters here.
 #
-# With --signatures <path>, also cross-checks that every address found already has a
-# signature in that case's signatures.json, and fails loudly listing whichever is
-# missing — run this before filling out submission/SUBMIT.md.
+# With --signatures <path>, also verifies every entry in that case's signatures.json
+# (the message names the entry's address and the signature recovers to it) and
+# cross-checks that every EOA sender has a valid entry, failing loudly listing whichever
+# is invalid or missing — run this before filling out submission/SUBMIT.md. Contract
+# senders can't sign, so they are listed separately instead.
 #
 # Usage:
 #   recovery-tx/list-impersonated.sh <tx-hash> [<tx-hash> ...]
@@ -63,24 +65,72 @@ if [ ! -f "${signatures_path}" ]; then
     exit 1
 fi
 
+if ! jq -e 'type == "array"' "${signatures_path}" >/dev/null 2>&1; then
+    echo "Error: ${signatures_path} is not a JSON array." >&2
+    exit 1
+fi
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# An entry only counts if its message names its own address and its signature
+# recovers to that address.
+verified=""
+invalid=0
+while IFS= read -r entry; do
+    [ -z "${entry}" ] && continue
+    e_addr="$(jq -r '.address // ""' <<<"${entry}")"
+    e_msg="$(jq -r '.message // ""' <<<"${entry}")"
+    e_sig="$(jq -r '.signature // ""' <<<"${entry}")"
+    if ! [[ "${e_addr}" =~ ^0x[0-9a-fA-F]{40}$ ]] || [ -z "${e_msg}" ] || ! [[ "${e_sig}" =~ ^0x[0-9a-fA-F]{130}$ ]]; then
+        echo "INVALID entry (needs address, message and a 65-byte signature): ${entry}" >&2
+        invalid=1
+        continue
+    fi
+    if [[ "$(lower "${e_msg}")" != *"$(lower "${e_addr}")"* ]]; then
+        echo "INVALID entry for ${e_addr}: message does not name that address." >&2
+        invalid=1
+        continue
+    fi
+    if ! cast wallet verify --address "${e_addr}" "${e_msg}" "${e_sig}" >/dev/null 2>&1; then
+        echo "INVALID entry for ${e_addr}: signature does not recover to that address." >&2
+        invalid=1
+        continue
+    fi
+    verified+="$(lower "${e_addr}")"$'\n'
+done < <(jq -c '.[]' "${signatures_path}")
+
 missing=0
+contracts=""
 while IFS= read -r addr; do
     [ -z "${addr}" ] && continue
-    found="$(jq --arg addr "${addr}" \
-        '[.[] | select(.address | ascii_downcase == ($addr | ascii_downcase))] | length' \
-        "${signatures_path}")"
-    if [ "${found}" = "0" ]; then
-        echo "MISSING signature for ${addr}" >&2
+    code="$(cast code "${addr}" --rpc-url "${RPC_URL}")"
+    if [ "${code}" != "0x" ]; then
+        contracts+="${addr}"$'\n'
+        continue
+    fi
+    if ! grep -Fxq "$(lower "${addr}")" <<<"${verified}"; then
+        echo "MISSING valid signature for ${addr}" >&2
         missing=1
     fi
 done <<<"${unique}"
 
-if [ "${missing}" -eq 0 ]; then
-    echo "All impersonated addresses have a signature in ${signatures_path}."
-    echo "(Remember: the destination EOA also needs a signature — this check only covers senders.)"
-else
+if [ -n "${contracts}" ]; then
+    echo
+    echo "NOTE: these senders are contracts, which have no private key and cannot sign:"
+    printf '%s' "${contracts}"
+    echo "Ownership of a contract is proven by signatures from the EOA(s) that control it"
+    echo "on-chain (owner, multisig signers, admin). Add those signatures to"
+    echo "${signatures_path} and explain the control path in your submission — see"
+    echo "submission/SUBMIT.md."
+fi
+
+if [ "${invalid}" -ne 0 ] || [ "${missing}" -ne 0 ]; then
     echo >&2
-    echo "Error: one or more impersonated addresses are missing a signature — run" >&2
-    echo "ownership-proof/sign-message.sh for each before submitting." >&2
+    echo "Error: fix the invalid/missing signatures above — run" >&2
+    echo "ownership-proof/sign-message.sh for each EOA before submitting." >&2
     exit 1
 fi
+
+echo
+echo "Every entry in ${signatures_path} is a valid signature, and every EOA sender is covered."
+echo "(Remember: the destination EOA also needs a signature — this check only covers senders.)"
