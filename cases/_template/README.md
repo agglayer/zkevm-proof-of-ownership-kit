@@ -83,7 +83,8 @@ From the repo root, pass every tx hash `move.sh` printed:
 ```
 
 This reads each transaction's mined receipt to find who actually sent it, verifies
-every signature in `signatures.json`, and fails loudly if any entry is invalid or any
+every signature in `signatures.json` (via `ownership-proof/verify-signature.sh`, the same
+check Polygon runs on your submission), and fails loudly if any entry is invalid or any
 EOA sender is still missing. Contract senders are listed separately, as a reminder to
 cover them with their controlling EOAs' signatures. It only checks senders, though —
 it can't know about your destination EOA (it never sends anything), so that signature
