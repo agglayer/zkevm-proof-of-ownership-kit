@@ -94,4 +94,5 @@ is still on you to remember.
 
 Once `move.sh` ran successfully and `signatures.json` has one entry per impersonated
 address plus your destination EOA, follow
-[`../../submission/SUBMIT.md`](../../submission/SUBMIT.md).
+[`../../submission/SUBMIT.md`](../../submission/SUBMIT.md) and email the package to
+[`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology).

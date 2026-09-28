@@ -1,12 +1,12 @@
 # Submission checklist
 
 Once you've completed the three steps in the main [README](../README.md) — fork,
-simulate, sign — package the following and send it back through the same Polygon support
-channel that gave you this kit.
+simulate, sign — package the following and email it to Polygon.
 
-**Delivery channel:** to be confirmed with your Polygon support contact (this may end up
-being a PR to this repo, a zip attached to your support/Slack thread, or another agreed
-channel — do not assume until confirmed).
+**Delivery channel:** email everything to
+[`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology). Put your
+case reference in the subject line and attach the files (or a zip of your
+`cases/<your-case-id>/` directory plus the fork logs).
 
 ## What to submit
 
