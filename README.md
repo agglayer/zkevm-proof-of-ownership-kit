@@ -115,7 +115,8 @@ No terminal, or a cold wallet only usable from the browser? Print the exact mess
    `move.sh`, running it against the fork, and collecting signatures into
    `signatures.json` for every impersonated address plus your destination EOA.
 3. **Submit.** Follow [`submission/SUBMIT.md`](submission/SUBMIT.md) to package
-   everything and send it back to Polygon for review.
+   everything and email it to
+   [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology) for review.
 
 ### Running the shadow-fork
 
