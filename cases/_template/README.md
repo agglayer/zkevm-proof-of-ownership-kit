@@ -32,7 +32,26 @@ Then, from the repo root:
 
 Note the transaction hash it prints — you'll need it for submission.
 
-## 3. Sign the ownership-proof message
+## 3. Export the recovered funds as delta exits
+
+Turn the simulated transactions into the exits Polygon will issue (the input of the
+exit_certificate delta mode). Use the bridge address of zkEVM mainnet and **an EOA** as destination
+(the exit goes to the same address on L1):
+
+```bash
+./recovery-tx/export-delta-exits.sh --bridge <zkEVM bridge address> --destination <DESTINATION_EOA> \
+    --out cases/<your-case-id>/delta-exits.json <tx-hash> [<tx-hash> ...]
+```
+
+It measures what the destination received (native token from the call trace, ERC-20 from the
+`Transfer` events), resolves each token's origin through the bridge and writes
+`delta-exits.json` plus `recovery-summary.json`. **Check the amounts and tokens against what you
+expected to recover** — the signatures in the next step authorise exactly these exits. It fails
+rather than guessing (reverted tx, NFT, unknown token origin, contract destination, nothing received).
+Run it again with `--signatures cases/<your-case-id>/signatures.json` once you have signed, to also
+confirm the destination's signature is there.
+
+## 4. Sign the ownership-proof message
 
 For every EOA impersonated in `move.sh`, **and** for your destination EOA, sign the
 proof message. Contracts impersonated in `move.sh` have no private key — sign instead
@@ -74,7 +93,7 @@ Keep the Etherscan link for your submission.
 ]
 ```
 
-## 4. Double-check you didn't miss a signature
+## 5. Double-check you didn't miss a signature
 
 From the repo root, pass every tx hash `move.sh` printed:
 
@@ -90,9 +109,9 @@ cover them with their controlling EOAs' signatures. It only checks senders, thou
 it can't know about your destination EOA (it never sends anything), so that signature
 is still on you to remember.
 
-## 5. Submit
+## 6. Submit
 
-Once `move.sh` ran successfully and `signatures.json` has one entry per impersonated
+Once `move.sh` ran successfully, `delta-exits.json` is exported and `signatures.json` has one entry per impersonated
 address plus your destination EOA, follow
 [`../../submission/SUBMIT.md`](../../submission/SUBMIT.md) and email the package to
 [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology).
