@@ -16,10 +16,6 @@ case reference in the subject line and attach the files (or a zip of your
 - [ ] **Simulated recovery transaction hash(es)** — the tx hash(es) produced by
       `recovery-tx/run.sh` showing the funds moving from the locked Smart Contract to your
       destination EOA on the fork.
-- [ ] **`delta-exits.json` and `recovery-summary.json`** — produced by
-      `recovery-tx/export-delta-exits.sh` from the tx hash(es) above: the exits (token,
-      destination, amount) Polygon will issue. Review them: your signatures authorise exactly
-      these. Run it with `--signatures` so it also confirms the destination's signature.
 - [ ] **One signature per impersonated EOA** — every EOA impersonated to execute the
       recovery transaction (owner(s)/signer(s) used to authorize it), each signing the
       fixed proof message from `ownership-proof/message-template.txt` with its real key.
