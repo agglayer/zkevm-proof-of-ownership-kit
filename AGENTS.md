@@ -97,7 +97,7 @@ plain and step-by-step.
   `signatures.json` for every EOA sender plus the destination — it never signs, it prints the
   `sign-message.sh` commands for the missing ones — and writes the files plus `manifest.json` (sha256
   of each file) to an output dir. It starts a fresh fork with `setup/fork.sh` and stops it on exit
-  (`--no-fork` to use an already-running one, e.g. in the e2e). It is also what a verifier runs to check that `move.sh`,
+  (it refuses to run if something already answers on `RPC_URL`'s port). It is also what a verifier runs to check that `move.sh`,
   `recovery.json` and `signatures.json` fit together. `helpers/package.sh` only packs that output
   into `<case-id>-<timestamp>.tgz`. `verify-submission.sh <tgz>` is the Polygon-side check (also runnable
   by the stakeholder): it unpacks the `.tgz` safely (untrusted: one `<case-id>/` folder, regular files,
@@ -141,8 +141,8 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 ./recovery-tx/list-impersonated.sh --signatures cases/<case-id>/signatures.json <tx-hash> ...
 #    (signatures only, no fork needed: ./ownership-proof/verify-signature.sh cases/<case-id>/signatures.json)
 
-# 5. Package. It starts (and afterwards stops) its own fresh fork — stop the one from step 1 first,
-#    or pass --no-fork to use a fresh one you manage. It repeats steps 2-4
+# 5. Package. It starts (and afterwards stops) its own fresh fork — stop the one from step 1 first
+#    (it refuses to run while something answers on the port). It repeats steps 2-4
 #    itself, fails listing the signatures missing from signatures.json and writes the .tgz to
 #    submit, then says where to send it; see submission/SUBMIT.md.
 #    Only check (no .tgz): ./submission/helpers/generate.sh cases/<case-id>
@@ -231,14 +231,14 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 
 ## Maintenance Matrix
 
-|                        When this changes…                       |                                                                    Also update…                                                                   |
-| :-------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------------------------------: |
-|              `ownership-proof/message-template.txt`             | `README.md` (Message format), `cases/_template/README.md` example entry, `verify-signature.sh` (assumes placeholder order address → nonce → date) |
-|               `sign-message.sh` flags or env vars               |                                       `README.md`, `cases/_template/README.md`, `AGENTS.md` workflow section                                      |
-| `list-impersonated.sh` / `verify-signature.sh` checks or output |                                      `cases/_template/README.md` step 3, `submission/SUBMIT.md`, `AGENTS.md`                                      |
-|                   `fork.sh` behavior or output                  |                                    `README.md` (Running the shadow-fork), `submission/SUBMIT.md` fork-logs item                                   |
-|          `recovery-tx/impersonate-and-move.template.sh`         |                                                   `cases/_template/move.sh` (keep them in sync)                                                   |
-|            `recovery.json` fields (`validate-recovery.sh`)         | `cases/_template/recovery.json` and README step 1, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                                       |
-|           `submission/prepare-submission.sh` / `verify-submission.sh` / `helpers/*` checks or output | `submission/SUBMIT.md` (contents table), `cases/_template/README.md` step 5, `test/e2e/run.sh` steps 8-9, `AGENTS.md` |
-|                 Files added/removed/implemented                 |                                                `README.md` layout, `AGENTS.md` Repository Structure                                               |
-|                     What stakeholders submit                    |                      `submission/SUBMIT.md`, `cases/_template/README.md` step 4, `submission/helpers/` (package layout, manifest)                     |
+|                                     When this changes…                                     |                                                                    Also update…                                                                   |
+| :----------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------------------------------: |
+|                           `ownership-proof/message-template.txt`                           | `README.md` (Message format), `cases/_template/README.md` example entry, `verify-signature.sh` (assumes placeholder order address → nonce → date) |
+|                            `sign-message.sh` flags or env vars                             |                                       `README.md`, `cases/_template/README.md`, `AGENTS.md` workflow section                                      |
+|              `list-impersonated.sh` / `verify-signature.sh` checks or output               |                                      `cases/_template/README.md` step 3, `submission/SUBMIT.md`, `AGENTS.md`                                      |
+|                                `fork.sh` behavior or output                                |                                    `README.md` (Running the shadow-fork), `submission/SUBMIT.md` fork-logs item                                   |
+|                       `recovery-tx/impersonate-and-move.template.sh`                       |                                                   `cases/_template/move.sh` (keep them in sync)                                                   |
+|                      `recovery.json` fields (`validate-recovery.sh`)                       |                    `cases/_template/recovery.json` and README step 1, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                    |
+| `submission/prepare-submission.sh` / `verify-submission.sh` / `helpers/*` checks or output |               `submission/SUBMIT.md` (contents table), `cases/_template/README.md` step 5, `test/e2e/run.sh` steps 8-9, `AGENTS.md`               |
+|                              Files added/removed/implemented                               |                                                `README.md` layout, `AGENTS.md` Repository Structure                                               |
+|                                  What stakeholders submit                                  |                    `submission/SUBMIT.md`, `cases/_template/README.md` step 4, `submission/helpers/` (package layout, manifest)                   |

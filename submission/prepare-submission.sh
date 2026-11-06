@@ -19,12 +19,10 @@
 # Requires: docker (with its daemon running), cast (Foundry), jq, curl, bc, tar.
 #
 # Usage (from the repo root):
-#   submission/prepare-submission.sh cases/<case-id> [--output-dir <dir>] [--no-fork] [--allow-test-fork]
+#   submission/prepare-submission.sh cases/<case-id> [--output-dir <dir>] [--allow-test-fork]
 #
 # Options:
 #   --output-dir <dir>  where to write the .tgz (default: the case directory)
-#   --no-fork           do not start a fork: use the one already running at RPC_URL (it must be
-#                       fresh — restart setup/fork.sh if move.sh already ran on it)
 #   --allow-test-fork   TESTING ONLY: accept a fork that is not at the halt block (FORK_BLOCK).
 #                       Such a package is not valid for a real submission.
 #
@@ -38,7 +36,7 @@ helpers="${script_dir}/helpers"
 submit_to="zkevm-claims@polygon.technology"
 
 usage() {
-    echo "Usage: $0 cases/<case-id> [--output-dir <dir>] [--no-fork] [--allow-test-fork]" >&2
+    echo "Usage: $0 cases/<case-id> [--output-dir <dir>] [--allow-test-fork]" >&2
 }
 
 die() {
@@ -64,7 +62,7 @@ while [ "$#" -gt 0 ]; do
         output_dir="$2"
         shift 2
         ;;
-    --no-fork | --allow-test-fork)
+    --allow-test-fork)
         gen_flags="${gen_flags} $1"
         shift
         ;;
@@ -95,7 +93,7 @@ missing_tools=""
 for bin in cast jq curl bc tar; do
     command -v "${bin}" >/dev/null 2>&1 || missing_tools="${missing_tools} ${bin}"
 done
-case "${gen_flags}" in *--no-fork*) ;; *) command -v docker >/dev/null 2>&1 || missing_tools="${missing_tools} docker" ;; esac
+command -v docker >/dev/null 2>&1 || missing_tools="${missing_tools} docker"
 if [ -n "${missing_tools}" ]; then
     echo "Error: missing required tool(s):${missing_tools}" >&2
     case "${missing_tools}" in *cast*) echo "  cast:   install the Foundry toolchain from https://getfoundry.sh" >&2 ;; esac

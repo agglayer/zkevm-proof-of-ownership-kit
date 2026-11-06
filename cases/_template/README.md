@@ -46,8 +46,9 @@ leave it running and, from the repo root:
 ./recovery-tx/run.sh cases/<your-case-id>/move.sh
 ```
 
-Stop and restart that fork before step 4 (or pass `--no-fork` there), since `move.sh` already
-moved the funds on it.
+Stop that fork before step 4 (Ctrl-C in its terminal, or `docker rm -f zkevm-shadow-fork-8545`):
+`prepare-submission.sh` starts its own fresh one on the same port and refuses to run while
+something answers there.
 
 `move.sh` runs inside a sandbox container (Docker, the Foundry image plus `jq` and `curl`; built the
 first time you run it, which needs internet once): it only sees the fork (at `$RPC_URL`, which the
@@ -65,7 +66,15 @@ proof message. Contracts impersonated in `move.sh` have no private key — sign 
 with the EOA(s) that control them on-chain (owner, multisig signers, admin).
 
 Use the exact same `NONCE` for every signature in this case — it's what lets Polygon
-match all the signatures to the same submission.
+match all the signatures to the same submission. The nonce is just a label: any short string
+of letters, digits, `-` and `_` (no spaces). To get a unique one:
+
+```bash
+export NONCE="$(date -u +%Y%m%d%H%M%S)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+```
+
+(or run `submission/prepare-submission.sh` with an empty `signatures.json`: it prints the nonce it
+would use inside the signing commands). The date in the message is the day you sign, UTC.
 
 **Option A — with this kit (from the repo root).** Pick the signer flag that matches
 where the key lives; the key itself is never passed on the command line:
@@ -133,8 +142,7 @@ which EOAs were impersonated, checks that `signatures.json` (filled in beforehan
 destination, writes `cases/<your-case-id>/<your-case-id>-<timestamp>.tgz` and tells you
 where to send it and how to verify it. It never
 signs: if a signature is missing it stops and prints the exact command to make it; sign,
-run it again. If you prefer to manage the fork yourself, start a fresh one with `setup/fork.sh`
-(restart it if `move.sh` already ran on it) and add `--no-fork`. (The scripts in `submission/helpers/` are the steps it runs; you don't need to call them.)
+run it again. (The scripts in `submission/helpers/` are the steps it runs; you don't need to call them.)
 
 Then follow [`../../submission/SUBMIT.md`](../../submission/SUBMIT.md) and email the
 `.tgz` to [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology).

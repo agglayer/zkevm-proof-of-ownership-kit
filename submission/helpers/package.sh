@@ -17,9 +17,7 @@ generated_dir="$1"
 case_id="$2"
 output_dir="$3"
 
-for bin in tar; do
-    command -v "${bin}" >/dev/null 2>&1 || { echo "Error: '${bin}' not found in \$PATH." >&2; exit 1; }
-done
+command -v tar >/dev/null 2>&1 || { echo "Error: 'tar' not found in \$PATH." >&2; exit 1; }
 [[ "${case_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "Error: invalid case id '${case_id}'." >&2; exit 1; }
 [ -f "${generated_dir}/manifest.json" ] || { echo "Error: ${generated_dir}/manifest.json not found — run helpers/generate.sh first." >&2; exit 1; }
 

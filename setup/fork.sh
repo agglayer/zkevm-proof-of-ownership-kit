@@ -64,9 +64,11 @@ fork_url="$(printf '%s' "${L2_RPC_URL}" | sed -e 's#^\([a-zA-Z]*://\)localhost\(
 
 # From here on everything printed (this script and Anvil) goes to the screen and to
 # FORK_LOG. The RPC URL may carry an API key, so every occurrence of it is replaced by a
-# masked copy (path and query string hidden) before it reaches either. `tee -i` ignores
+# masked copy (userinfo, path and query string hidden) before it reaches either. A key embedded
+# in the host name itself (https://<key>.provider.io) cannot be masked generically: use a
+# provider that puts it in the path, query or userinfo, or review fork.log before sending it. `tee -i` ignores
 # Ctrl-C so the log is complete; it ends by itself when Anvil closes the pipe.
-masked_url="$(printf '%s' "${L2_RPC_URL}" | sed -e 's/?.*$/?***/' -e 's#^\([a-zA-Z]*://[^/]*\)/..*$#\1/***#')"
+masked_url="$(printf '%s' "${L2_RPC_URL}" | sed -e 's/?.*$/?***/' -e 's#^\([a-zA-Z]*://\)[^/@]*@#\1***@#' -e 's#^\([a-zA-Z]*://[^/]*\)/..*$#\1/***#')"
 mask_secrets() {
     local line
     while IFS= read -r line || [ -n "${line}" ]; do

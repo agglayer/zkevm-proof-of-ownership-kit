@@ -63,7 +63,12 @@ if ! curl -sS -X POST "${RPC_URL}" -H 'Content-Type: application/json' \
     exit 1
 fi
 
-fork_port="$(printf '%s' "${RPC_URL}" | sed -n 's#^http://\(127\.0\.0\.1\|localhost\):\([0-9]\{1,5\}\)/\{0,1\}$#\2#p')"
+# A Bash regex (BSD sed on stock macOS does not support \| in basic regular expressions).
+fork_port=""
+rpc_re='^http://(127\.0\.0\.1|localhost):([0-9]{1,5})/?$'
+if [[ "${RPC_URL}" =~ ${rpc_re} ]]; then
+    fork_port="${BASH_REMATCH[2]}"
+fi
 if [ -z "${fork_port}" ]; then
     echo "Error: RPC_URL must be http://127.0.0.1:<port> (the fork on this machine); it is ${RPC_URL}." >&2
     exit 1
@@ -97,6 +102,7 @@ work_dir="$(mktemp -d)"
 net_created=0
 attached=0
 
+# shellcheck disable=SC2329  # invoked by the EXIT trap below
 cleanup() {
     local rc=$?
     set +e

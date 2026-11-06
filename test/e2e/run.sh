@@ -183,8 +183,6 @@ export RPC_URL ETH_RPC_URL="${RPC_URL}"
 grep -q "WARNING: FORK_BLOCK=${STABLE_BLOCK}" "${FORK_LOG}" || fail "fork.log lacks the FORK_BLOCK warning"
 [ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "${vault_wei}" ] || fail "vault balance differs on the fork"
 dest_before="$(balance_wei "${DEST}" "${RPC_URL}")"
-# Snapshot of the pristine fork: step 8 reverts to it to run prepare-submission.sh on a fresh fork.
-SNAP_ID="$(cast rpc evm_snapshot --rpc-url "${RPC_URL}" | tr -d '"')"
 echo "  fork up, vault funded on the fork"
 
 # ---------------------------------------------------------------- 5. case
@@ -254,15 +252,13 @@ expect_fail "verify-signature rejects a forged signature" \
     "${repo_root}/ownership-proof/verify-signature.sh" "${WORKDIR}/forged.json"
 
 # ---------------------------------------------------------------- 8. prepare-submission.sh
-step "8. submission/prepare-submission.sh on a fresh fork"
-# Back to the pristine fork (the withdraw of step 5 is undone). A snapshot is consumed by
-# the revert, so a new one is taken each time.
-fresh_fork() {
-    cast rpc evm_revert "${SNAP_ID}" --rpc-url "${RPC_URL}" >/dev/null
-    SNAP_ID="$(cast rpc evm_snapshot --rpc-url "${RPC_URL}" | tr -d '"')"
-}
-fresh_fork
-[ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "${vault_wei}" ] || fail "revert did not restore the vault"
+step "8. submission/prepare-submission.sh (it starts its own fork each time)"
+# The fork of step 4 is used (the withdraw of step 5 happened on it), so stop it: the scripts
+# start a fresh one from geth on the same port, every run.
+kill "${fork_pid}" 2>/dev/null || true
+docker rm -f "${ANVIL_NAME}" >/dev/null 2>&1 || true
+wait "${fork_pid}" 2>/dev/null || true
+fork_pid=""
 
 write_recovery() { # <path> <amount>
     jq -n --arg locked "${VAULT}" --arg dest "${DEST}" --arg amount "$2" \
@@ -270,10 +266,15 @@ write_recovery() { # <path> <amount>
 }
 write_recovery "${CASE_DIR}/recovery.json" "${vault_wei}"
 OUT_DIR="${WORKDIR}/out"
-pkg() { # <case dir> [extra args] — non-interactive (no TTY), on the fork already running (--no-fork)
+# The scripts start the fork themselves with setup/fork.sh: tell it to fork the geth chain.
+fork_env() {
+    L2_RPC_URL="${GETH_URL}" ANVIL_PORT="${ANVIL_PORT}" FORK_BLOCK="${STABLE_BLOCK}" BLOCK_TIME=1 \
+        RPC_URL="${RPC_URL}" FORK_LOG="${FORK_LOG}" "$@"
+}
+pkg() { # <case dir> [extra args] — non-interactive (no TTY)
     local dir="$1"
     shift
-    RPC_URL="${RPC_URL}" FORK_LOG="${FORK_LOG}" "${repo_root}/submission/prepare-submission.sh" "${dir}" --no-fork "$@" </dev/null
+    fork_env "${repo_root}/submission/prepare-submission.sh" "${dir}" "$@" </dev/null
 }
 
 # Negative: a fork that is not at the halt block is refused unless --allow-test-fork.
@@ -291,7 +292,6 @@ write_recovery "${CASE_DIR}/recovery.json" "$((vault_wei - 1))"
 expect_fail "prepare-submission.sh rejects a move that differs from recovery.json" \
     pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -q "does not match recovery.json" "${WORKDIR}/neg.out" || fail "expected the mismatch message"
-fresh_fork
 
 # Negative: no signature for the owner (a sender) -> asks for it and fails without a TTY.
 CASE_UNSIGNED="${WORKDIR}/case-unsigned"
@@ -300,7 +300,18 @@ write_recovery "${CASE_UNSIGNED}/recovery.json" "${vault_wei}"
 jq --arg owner "${OWNER}" '[.[] | select((.address | ascii_downcase) != ($owner | ascii_downcase))]' "${SIGS}" >"${CASE_UNSIGNED}/signatures.json"
 expect_fail "prepare-submission.sh fails when the owner has not signed" pkg "${CASE_UNSIGNED}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -qi "ADDRESS=${OWNER} NONCE=${NONCE}" "${WORKDIR}/neg.out" || fail "expected the sign-message command for the owner"
-fresh_fork
+
+# Negative: a tx from an unsigned sender still pending when move.sh exits (--async) must be
+# collected (the pool is flushed before the scan), so its sender is required to sign.
+CASE_PENDING="${WORKDIR}/case-pending"
+cp -r "${CASE_DIR}" "${CASE_PENDING}"
+write_recovery "${CASE_PENDING}/recovery.json" "${vault_wei}"
+cat >>"${CASE_PENDING}/move.sh" <<PENDING
+cast send --async --unlocked --from "${ATTACKER}" "${ATTACKER}" --value 1 --rpc-url "\${RPC_URL}" >&2
+PENDING
+expect_fail "prepare-submission.sh collects a tx still pending when move.sh exits" \
+    pkg "${CASE_PENDING}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -qi "${ATTACKER}" "${WORKDIR}/neg.out" || fail "expected the pending tx's sender to be required to sign"
 
 # Positive: everything signed -> a package.
 write_recovery "${CASE_DIR}/recovery.json" "${vault_wei}"
@@ -312,7 +323,6 @@ PKG_DIR="${WORKDIR}/unpacked/case"
 for f in manifest.json recovery.json move.sh signatures.json fork.log run.log; do
     [ -f "${PKG_DIR}/${f}" ] || fail "package lacks ${f}"
 done
-[ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "0" ] || fail "vault not empty after prepare-submission.sh"
 jq -e --arg nonce "${NONCE}" --arg dest "${DEST}" --arg locked "${VAULT}" --arg amount "${vault_wei}" '
     .test_fork == true and .nonce == $nonce and (.tx_hashes | length) == 1
     and (.required_signers | length) == 2 and .contract_senders == []
@@ -327,13 +337,17 @@ done
 "${repo_root}/ownership-proof/verify-signature.sh" "${PKG_DIR}/signatures.json" >/dev/null
 echo "  package ok: $(basename "${PKG}")"
 
-# Negative: running it again on the same (now used) fork is refused.
-expect_fail "prepare-submission.sh refuses a fork already used by an earlier run" pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}"
-grep -q "less than the" "${WORKDIR}/neg.out" || fail "expected the 'fork already used' message"
+# Negative: something already answers on the fork port (e.g. a fork started by hand): refused.
+docker run -d --rm --name "${ANVIL_NAME}" -p "127.0.0.1:${ANVIL_PORT}:8545" --entrypoint anvil \
+    "${ANVIL_IMAGE:-ghcr.io/foundry-rs/foundry:v1.5.1}" --host 0.0.0.0 >/dev/null
+wait_rpc "${RPC_URL}" 60 || fail "the stand-in fork did not answer"
+expect_fail "prepare-submission.sh refuses to run while something answers on the fork port" \
+    pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "something already answers" "${WORKDIR}/neg.out" || fail "expected the 'already answers' message"
+docker rm -f "${ANVIL_NAME}" >/dev/null 2>&1
 
 # Positive: the destination is also the sender (the owner withdraws to itself) and pays gas,
 # so its balance gains less than the amount; prepare-submission.sh adds the gas back and still passes.
-fresh_fork
 CASE_SELF="${WORKDIR}/case-self"
 cp -r "${CASE_DIR}" "${CASE_SELF}"
 sed "s/\"withdraw(address,uint256)\" \"${DEST}\"/\"withdraw(address,uint256)\" \"${OWNER}\"/" "${CASE_DIR}/move.sh" >"${CASE_SELF}/move.sh"
@@ -348,15 +362,13 @@ echo "  package ok with destination == sender (gas paid added back)"
 
 # ---------------------------------------------------------------- 9. verify-submission.sh
 step "9. submission/verify-submission.sh on the package"
-fresh_fork
-verify() { # <tgz> [extra args] — on the fork already running, FORK_LOG of this run
+verify() { # <tgz> [extra args] — starts its own fork like pkg
     local f="$1"
     shift
-    RPC_URL="${RPC_URL}" FORK_LOG="${FORK_LOG}" "${repo_root}/submission/verify-submission.sh" "${f}" --no-fork "$@" </dev/null
+    fork_env "${repo_root}/submission/verify-submission.sh" "${f}" "$@" </dev/null
 }
 expect_fail "verify-submission refuses a test package without --allow-test-fork" verify "${PKG}"
 grep -q "TEST fork" "${WORKDIR}/neg.out" || fail "expected the test-fork message"
-fresh_fork
 verify "${PKG}" --allow-test-fork >"${WORKDIR}/verify.out" || { cat "${WORKDIR}/verify.out" >&2; fail "verification of a good package failed"; }
 grep -q "^VERIFIED:" "${WORKDIR}/verify.out" || fail "expected VERIFIED"
 echo "  verified: $(basename "${PKG}")"
@@ -374,7 +386,6 @@ grep -q "do not match manifest.json" "${WORKDIR}/neg.out" || fail "expected the 
 tar -xzf "${PKG}" -C "${TAMPER}/b"
 jq '.nonce = "999"' "${TAMPER}/b/case/manifest.json" >"${TAMPER}/m.json" && mv "${TAMPER}/m.json" "${TAMPER}/b/case/manifest.json"
 tar -czf "${TAMPER}/nonce.tgz" -C "${TAMPER}/b" case
-fresh_fork
 expect_fail "verify-submission rejects a manifest that differs from a fresh run" verify "${TAMPER}/nonce.tgz" --allow-test-fork
 grep -q "does not match what the case does" "${WORKDIR}/neg.out" || fail "expected the manifest mismatch message"
 echo x >"${TAMPER}/c/f"

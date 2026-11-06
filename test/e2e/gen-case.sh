@@ -7,7 +7,7 @@
 #      a keystore (owner + dest, public test keys, password "pw") and env.sh.
 #
 # It does NOT start the fork, run move.sh or sign anything: that is up to the caller
-# (see test/e2e/gen-and-package.sh, or the commands printed at the end). The geth container
+# (see the commands printed at the end). The geth container
 # is left running; remove it with: docker rm -f zkevm-kit-e2e-geth-<GETH_PORT>
 #
 # Reusable by a verifier: it produces a case whose move.sh, recovery.json and signatures.json
@@ -148,7 +148,7 @@ cat <<NEXT
 Next (from ${repo_root}):
   source cases/${case_id}/env.sh
   setup/fork.sh                                    # separate terminal
-  ./recovery-tx/run.sh cases/${case_id}/move.sh    # or submission/prepare-submission.sh cases/${case_id} --allow-test-fork --no-fork
+  ./recovery-tx/run.sh cases/${case_id}/move.sh    # or submission/prepare-submission.sh cases/${case_id} --allow-test-fork   # stop setup/fork.sh first: it starts its own
   ADDRESS=\$OWNER NONCE=\$NONCE ./ownership-proof/sign-message.sh cases/${case_id}/signatures.json --keystore cases/${case_id}/keystore/owner --password pw
   ADDRESS=\$DEST  NONCE=\$NONCE ./ownership-proof/sign-message.sh cases/${case_id}/signatures.json --keystore cases/${case_id}/keystore/dest  --password pw
 NEXT

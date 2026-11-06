@@ -21,8 +21,8 @@ Laid out as `<case-id>/`:
 | `move.sh` | The simulated recovery that Polygon re-runs on its own fork. |
 | `signatures.json` | One signature per EOA impersonated in `move.sh` plus the destination, each over the fixed proof message (which includes the nonce and date). |
 | `manifest.json` | What the run found: tx hashes, impersonated addresses, nonce, balances before and after, whether it was a test fork, and the sha256 of every file. |
-| `fork.log` | Full output of `setup/fork.sh`, with the halt block and its confirmation line. |
-| `run.log` | Output of `move.sh` on the fork. |
+| `fork.log` | Full output of `setup/fork.sh`, with the halt block and its confirmation line. Informational: the verifier checks its own fork, not this file. |
+| `run.log` | Output of `move.sh` on the fork. Informational, like `fork.log` (only its hash is checked). |
 | `etherscan-links.txt` | Only if you put one in your case directory: links to signatures published at [etherscan.io/verifiedSignatures](https://etherscan.io/verifiedSignatures) instead of `sign-message.sh`. |
 
 ## Verifying a package

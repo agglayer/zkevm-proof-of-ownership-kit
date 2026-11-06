@@ -12,10 +12,9 @@
 #
 # What it does, in order (it stops at the first problem, with what to do next):
 #   1. validates cases/<case-id>/recovery.json (recovery-tx/validate-recovery.sh);
-#   2. starts the shadow-fork (setup/fork.sh, stopped again on exit; see --no-fork) and checks
-#      it: setup/fork.log confirms the halt block, the RPC is up and the
-#      locked contract still holds the funds (a fork already used by an earlier run does
-#      not — restart setup/fork.sh);
+#   2. starts a fresh shadow-fork (setup/fork.sh, stopped again on exit) and checks it:
+#      the fork log confirms the halt block, the RPC is up and the locked contract holds
+#      the declared funds;
 #   3. runs the case's move.sh against the fork (recovery-tx/run.sh) and collects every
 #      transaction it mined;
 #   4. checks the simulation against recovery.json: for each declared fund, the locked
@@ -28,17 +27,14 @@
 # Requires: cast, jq, curl, bc (and sha256sum or shasum), and docker for the fork.
 #
 # Usage (from the repo root):
-#   submission/helpers/generate.sh cases/<case-id> [--out-dir <dir>] [--no-fork] [--allow-test-fork]
+#   submission/helpers/generate.sh cases/<case-id> [--out-dir <dir>] [--allow-test-fork]
 #
-# By default it starts a fresh fork itself (so it is never a fork already used by an earlier
-# run) and stops it when it finishes, also on failure. It passes its own environment to
+# It starts a fresh fork itself (so it is never a fork already used by an earlier run) and
+# stops it when it finishes, also on failure. It passes its own environment to
 # setup/fork.sh (L2_RPC_URL, BLOCK_TIME, ANVIL_IMAGE, FORK_BLOCK...: `source setup/.env`
 # first if you use one) and serves it on the port of RPC_URL.
 #
 # Options:
-#   --no-fork           do not start the fork: use the one already running at RPC_URL (started
-#                       by you with setup/fork.sh, and fresh: restart it if move.sh already ran
-#                       on it). Nothing is stopped on exit.
 #   --out-dir <dir>     where to write the files (default: cases/<case-id>/generated). Files
 #                       are overwritten; nothing else in the directory is touched.
 #   --allow-test-fork   TESTING ONLY: accept a fork that is not at the halt block (started
@@ -46,9 +42,9 @@
 #                       for a real submission.
 #
 # Env overrides:
-#   RPC_URL    the fork's JSON-RPC (default: http://127.0.0.1:8545; to let this script start
-#              the fork it must be http://127.0.0.1:<port> or http://localhost:<port>)
-#   FORK_LOG   the log fork.sh wrote (default: setup/fork.log)
+#   RPC_URL    where the fork is served (default: http://127.0.0.1:8545; it must be
+#              http://127.0.0.1:<port> or http://localhost:<port>, and nothing may answer there)
+#   FORK_LOG   where the fork's log is written (default: setup/fork.log)
 #   NONCE      the nonce suggested in the signing commands when signatures.json is still
 #              empty (default: generated). Once it has entries, their nonce is used.
 set -euo pipefail
@@ -60,7 +56,7 @@ FORK_LOG="${FORK_LOG:-${repo_root}/setup/fork.log}"
 chain_id_expected=1101
 
 usage() {
-    echo "Usage: $0 cases/<case-id> [--out-dir <dir>] [--no-fork] [--allow-test-fork]" >&2
+    echo "Usage: $0 cases/<case-id> [--out-dir <dir>] [--allow-test-fork]" >&2
 }
 
 die() {
@@ -78,17 +74,12 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 case_arg=""
 out_dir=""
 allow_test_fork=0
-start_fork=1
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --out-dir)
         [ "$#" -ge 2 ] || die "--out-dir requires a directory."
         out_dir="$2"
         shift 2
-        ;;
-    --no-fork)
-        start_fork=0
-        shift
         ;;
     --allow-test-fork)
         allow_test_fork=1
@@ -196,30 +187,33 @@ rpc_answers() {
     curl -sS -m 2 -X POST "${RPC_URL}" -H 'Content-Type: application/json' \
         --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' 2>/dev/null | jq -e '.result' >/dev/null 2>&1
 }
-if [ "${start_fork}" -eq 1 ]; then
-    fork_port="$(printf '%s' "${RPC_URL}" | sed -n 's#^http://\(127\.0\.0\.1\|localhost\):\([0-9]\{1,5\}\)/\{0,1\}$#\2#p')"
-    [ -n "${fork_port}" ] || die "to start the fork RPC_URL must be http://127.0.0.1:<port> (it is ${RPC_URL}); or use --no-fork with a fork you started yourself."
-    if rpc_answers; then
-        die "something already answers at ${RPC_URL}. Stop it so this script can start a fresh fork, or use --no-fork to use it."
-    fi
-    echo "Starting the shadow-fork (setup/fork.sh) on port ${fork_port}; it is stopped when this script ends ..."
-    fork_container="zkevm-shadow-fork-${fork_port}"
-    trap stop_fork EXIT
-    trap 'exit 130' INT TERM
-    ANVIL_PORT="${fork_port}" FORK_LOG="${FORK_LOG}" "${repo_root}/setup/fork.sh" >/dev/null 2>&1 &
-    fork_pid=$!
-    fork_wait=0
-    until rpc_answers; do
-        fork_wait=$((fork_wait + 1))
-        if ! kill -0 "${fork_pid}" 2>/dev/null || [ "${fork_wait}" -ge 300 ]; then
-            tail -n 20 "${FORK_LOG}" >&2 2>/dev/null || true
-            die "the shadow-fork did not come up (log: ${FORK_LOG})."
-        fi
-        sleep 1
-    done
-    echo "Fork is up at ${RPC_URL}."
+# A Bash regex (BSD sed on stock macOS does not support \| in basic regular expressions).
+fork_port=""
+rpc_re='^http://(127\.0\.0\.1|localhost):([0-9]{1,5})/?$'
+if [[ "${RPC_URL}" =~ ${rpc_re} ]]; then
+    fork_port="${BASH_REMATCH[2]}"
 fi
-[ -f "${FORK_LOG}" ] || die "${FORK_LOG} not found — start the fork with setup/fork.sh (it writes that log), or set FORK_LOG."
+[ -n "${fork_port}" ] || die "RPC_URL must be http://127.0.0.1:<port> (it is ${RPC_URL}): the fork is started on this machine."
+if rpc_answers; then
+    die "something already answers at ${RPC_URL} (a fork you started by hand?). Stop it so this script can start a fresh one: docker rm -f zkevm-shadow-fork-${fork_port}"
+fi
+echo "Starting the shadow-fork (setup/fork.sh) on port ${fork_port}; it is stopped when this script ends ..."
+fork_container="zkevm-shadow-fork-${fork_port}"
+trap stop_fork EXIT
+trap 'exit 130' INT TERM
+ANVIL_PORT="${fork_port}" FORK_LOG="${FORK_LOG}" "${repo_root}/setup/fork.sh" >/dev/null 2>&1 &
+fork_pid=$!
+fork_wait=0
+until rpc_answers; do
+    fork_wait=$((fork_wait + 1))
+    if ! kill -0 "${fork_pid}" 2>/dev/null || [ "${fork_wait}" -ge 300 ]; then
+        tail -n 20 "${FORK_LOG}" >&2 2>/dev/null || true
+        die "the shadow-fork did not come up (log: ${FORK_LOG})."
+    fi
+    sleep 1
+done
+echo "Fork is up at ${RPC_URL}."
+[ -f "${FORK_LOG}" ] || die "${FORK_LOG} not found — the fork did not write its log."
 
 halt_block="$(sed -n 's/^halt_block=\([0-9]*\)$/\1/p' "${repo_root}/setup/fork.sh")"
 require_uint "${halt_block}"
@@ -258,7 +252,7 @@ while IFS= read -r fund; do
     locked_before="$(balance_of "${locked}" "${token}")"
     dest_before="$(balance_of "${destination}" "${token}")"
     if [ "$(bc_calc "${locked_before} >= ${amount}")" != "1" ]; then
-        die "${locked} holds ${locked_before} of ${token} on the fork, less than the ${amount} declared. If you already ran this case on it, use a fresh fork (restart setup/fork.sh, or run without --no-fork)."
+        die "${locked} holds ${locked_before} of ${token} on the fork, less than the ${amount} declared. Is the locked contract on this chain at that address, with those funds?"
     fi
     balances="$(jq -c --arg token "${token}" --arg amount "${amount}" --arg lb "${locked_before}" --arg db "${dest_before}" \
         '. + [{token: $token, amount: $amount, locked_before: $lb, destination_before: $db}]' <<<"${balances}")"
@@ -273,8 +267,25 @@ set +e
 RPC_URL="${RPC_URL}" "${repo_root}/recovery-tx/run.sh" "${move_path}" 2>&1 | tee "${run_log}"
 run_status="${PIPESTATUS[0]}"
 set -e
-[ "${run_status}" -eq 0 ] || die "move.sh failed (see above). Run it again to start from a fresh fork (with --no-fork: restart setup/fork.sh first), since the fork may be half-modified."
+[ "${run_status}" -eq 0 ] || die "move.sh failed (see above). Run this again: it starts a fresh fork every time."
 
+# A tx still pending when move.sh exits (e.g. sent with `cast send --async`) would be mined after
+# the head read below: it would be missing from the scan while still affecting the balances. So
+# mine a block now and require that nothing is left in the pool.
+cast rpc evm_mine --rpc-url "${RPC_URL}" >/dev/null || die "could not mine a block on the fork (evm_mine)."
+pool_tries=0
+while :; do
+    pool_status="$(cast rpc txpool_status --rpc-url "${RPC_URL}" 2>/dev/null || true)"
+    pool_pending="$(jq -r '.pending // empty' <<<"${pool_status}" 2>/dev/null || true)"
+    pool_queued="$(jq -r '.queued // empty' <<<"${pool_status}" 2>/dev/null || true)"
+    [ "${pool_pending}" = "0x0" ] && [ "${pool_queued}" = "0x0" ] && break
+    pool_tries=$((pool_tries + 1))
+    if [ "${pool_tries}" -ge 30 ]; then
+        die "move.sh left transactions pending in the fork's pool (pending ${pool_pending:-?}, queued ${pool_queued:-?}): they would not be covered by the checks. Make move.sh wait for every transaction (do not use --async)."
+    fi
+    cast rpc evm_mine --rpc-url "${RPC_URL}" >/dev/null || true
+    sleep 1
+done
 head_after="$(cast block-number --rpc-url "${RPC_URL}")"
 require_uint "${head_after}"
 tx_hashes=""
@@ -346,7 +357,9 @@ eoa_senders=""
 contract_senders=""
 while IFS= read -r addr; do
     [ -z "${addr}" ] && continue
-    if [ "$(cast code "${addr}" --rpc-url "${RPC_URL}")" = "0x" ]; then
+    # EOA or contract is decided on the state BEFORE move.sh ran: a move.sh that sets code on an
+    # address (anvil_setCode) must not be able to turn an EOA into a "contract" that needs no signature.
+    if [ "$(cast code "${addr}" --block "${head_before}" --rpc-url "${RPC_URL}")" = "0x" ]; then
         eoa_senders+="${addr}"$'\n'
     else
         contract_senders+="${addr}"$'\n'
@@ -445,7 +458,7 @@ jq -n \
       required_signers: $required_signers, balances: $balances, files: $files}' >"${stage}/manifest.json"
 
 echo "Generated in ${out_dir}:"
-ls "${out_dir}" | sed 's/^/  /'
+for generated_file in "${out_dir}"/*; do echo "  ${generated_file##*/}"; done
 echo
 if [ "${test_fork}" = true ]; then
     echo "This was built on a TEST fork and is not valid for a real submission."

@@ -107,6 +107,23 @@ signs through `cast` with a hardware wallet (`--ledger` / `--trezor`), a Foundry
 (`--account`), or a hidden key prompt (`--interactive`); raw private keys on the command
 line are refused.
 
+### Choosing the NONCE
+
+The nonce is just a label that ties together all the signatures of your case: it goes inside the
+signed message, and Polygon rejects a `signatures.json` whose entries do not all share it. Pick any
+short string made of letters, digits, `-` and `_` (no spaces) and use **the same one for every
+signature of the case**. A unique one is convenient, e.g. the date plus a random suffix:
+
+```bash
+export NONCE="$(date -u +%Y%m%d%H%M%S)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"   # e.g. 20261106103015-9f3a1c07
+```
+
+If you don't want to pick one, run `submission/prepare-submission.sh` with an empty
+`signatures.json`: it prints the nonce it would use inside the `sign-message.sh` commands for the
+missing signatures; use that one. Once the file has a signature, its nonce is the one to keep.
+
+The date in the message is the day you sign (UTC); signatures made on different days are fine.
+
 No terminal, or a cold wallet only usable from the browser? Print the exact message with
 `sign-message.sh --print-message` and sign it at
 [etherscan.io/verifiedSignatures](https://etherscan.io/verifiedSignatures) instead — see
@@ -163,7 +180,8 @@ the last step does it.
    # or: --trezor | --account <foundry-keystore-name> | --keystore <path> | --interactive
    ```
 
-   Repeat for each address (see [Message format](#message-format)). Not sure which addresses
+   Repeat for each address (see [Message format](#message-format); the nonce can be any string,
+   see [Choosing the NONCE](#choosing-the-nonce)). Not sure which addresses
    `move.sh` impersonates? Go to step 5 with what you have: it lists the ones that are missing,
    with the exact command to sign each.
 
@@ -191,8 +209,7 @@ the last step does it.
    all of it with `manifest.json`. It ends with `VERIFIED: ...` and exit code 0; any problem prints
    a `FAIL: ...` line saying what does not match. Only send the file if it says `VERIFIED`.
 
-   The same flags as in step 5 apply (`--no-fork` to use a fresh fork you started yourself).
-   Verify the exact file you are going to send: if you change anything in the case afterwards,
+   Like step 5, it starts its own fresh fork. Verify the exact file you are going to send: if you change anything in the case afterwards,
    go back to step 5 and generate a new package.
 
 ## Appendix: what the scripts do inside
@@ -217,7 +234,7 @@ the last step does it.
 3. **Packs** those files into the `.tgz` (`submission/helpers/package.sh`).
 4. **Tells you** where to send it and how to verify it.
 
-Options: `--no-fork` (use a fork you already started, fresh), `--output-dir <dir>`,
+Options: `--output-dir <dir>`,
 `--allow-test-fork` (testing only; such a package is not valid for a real submission).
 
 ### `submission/verify-submission.sh <tgz>`
@@ -229,8 +246,7 @@ every signature and compares all of it with `manifest.json`.
 
 ### Running the shadow-fork by hand (optional)
 
-You don't need this to submit. Do it only to try your `move.sh` first with `recovery-tx/run.sh`,
-or to use `--no-fork`.
+You don't need this to submit. Do it only to try your `move.sh` first with `recovery-tx/run.sh`.
 
 ```bash
 cd setup
@@ -242,8 +258,12 @@ source .env
 `fork.sh` pins the fork to the network's halt block and refuses to start if that block
 doesn't match the RPC's current latest block — so a stale or wrong RPC endpoint fails
 loudly instead of silently forking the wrong state. Leave it running in its own terminal;
-it's the node the rest of the kit connects to. Restart it before `prepare-submission.sh
---no-fork` if `move.sh` already ran on it.
+it's the node `recovery-tx/run.sh` connects to.
+
+**Stop it before running `prepare-submission.sh` or `verify-submission.sh`**: they start their
+own fresh fork on the same port (8545 by default) and refuse to run while something answers there.
+To stop it, press Ctrl-C in its terminal, or run `docker rm -f zkevm-shadow-fork-8545` (the number
+is the port).
 
 Everything it prints (including Anvil's own output) is also saved to `setup/fork.log`
 (override with `FORK_LOG`), overwritten on every start — it goes into your submission, so don't

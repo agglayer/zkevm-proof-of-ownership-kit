@@ -11,25 +11,28 @@
 6. signs with owner and destination (temporary keystore), then checks with
    `recovery-tx/list-impersonated.sh --signatures` and `ownership-proof/verify-signature.sh`;
 7. checks that a tampered signature does not verify;
-8. reverts the fork to a snapshot and runs `submission/prepare-submission.sh` on it (`--allow-test-fork`),
+8. stops that fork and runs `submission/prepare-submission.sh` (`--allow-test-fork`), which starts its own
+   fork from geth,
    then unpacks the `.tgz` and checks `manifest.json`, the file hashes and the signatures. A second
    case has the destination withdraw to itself, to check that the gas it pays is added back.
 
-9. runs `submission/verify-submission.sh` on the `.tgz` (on a fresh fork, `--no-fork`), which unpacks it,
+9. runs `submission/verify-submission.sh` on the `.tgz` (it starts its own fork), which unpacks it,
    re-runs `move.sh`, checks `recovery.json`, the impersonated addresses and the signatures, and compares
    them with `manifest.json`.
 
 Negative cases: non-owner withdraw reverts; missing owner signature makes `list-impersonated.sh`
 fail; `sign-message.sh` rejects `--private-key`; a forged signature does not verify; `prepare-submission.sh`
 refuses a test fork without `--allow-test-fork`, a `recovery.json` declaring more than the vault
-holds or less than `move.sh` moves, a missing owner signature (printing the command to sign) and a
-fork already used by an earlier run; `verify-submission.sh` refuses a test package without `--allow-test-fork`,
+holds or less than `move.sh` moves, a missing owner signature (printing the command to sign) and
+running while something already answers on the fork port; `verify-submission.sh` refuses a test package without `--allow-test-fork`,
 a file changed after packaging, a manifest that differs from a fresh run and a path-traversal entry.
 
 Everything (containers, temp dirs, fork process) is removed on exit, also on failure. Nothing is
 written to the repo.
 
 ## Run locally
+
+Linux only for now: the script uses GNU `tar --transform` and `sha256sum` (macOS needs `gtar` and `coreutils`).
 
 Needs `docker` (daemon running), Foundry (`cast`, `forge`), `curl`, `jq`. From the repo root:
 

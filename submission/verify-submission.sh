@@ -19,25 +19,25 @@
 # of your machine, read-only filesystem, resource limits. It is still worth reading it first
 # (`tar -xzOf <tgz> <case-id>/move.sh`).
 #
-# Requires: docker (with its daemon running; not with --no-fork), cast (Foundry), jq, curl, bc, tar.
+# Requires: docker (with its daemon running), cast (Foundry), jq, curl, bc, tar.
 #
 # Usage (from the repo root):
-#   submission/verify-submission.sh <submission.tgz> [--no-fork] [--allow-test-fork]
+#   submission/verify-submission.sh <submission.tgz> [--allow-test-fork]
 #
 # Options:
-#   --no-fork           do not start a fork: use the fresh one already running at RPC_URL
 #   --allow-test-fork   TESTING ONLY: accept a package built on a test fork (manifest
 #                       test_fork=true) and a fork that is not at the halt block
 #
-# Env overrides: RPC_URL (default http://127.0.0.1:8545), FORK_LOG (default: a temp file; with
-# --no-fork set it to the log of the fork you started) and the settings of setup/fork.sh
+# Env overrides: RPC_URL (default http://127.0.0.1:8545; nothing may answer there, the fork is
+# started on that port), FORK_LOG (default: a temp file) and the settings of setup/fork.sh
 # (L2_RPC_URL, ...: `source setup/.env` first if you use one).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
 
 usage() {
-    echo "Usage: $0 <submission.tgz> [--no-fork] [--allow-test-fork]" >&2
+    echo "Usage: $0 <submission.tgz> [--allow-test-fork]" >&2
 }
 
 die() {
@@ -58,10 +58,6 @@ gen_flags=""
 allow_test_fork=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --no-fork)
-        gen_flags="${gen_flags} --no-fork"
-        shift
-        ;;
     --allow-test-fork)
         allow_test_fork=1
         gen_flags="${gen_flags} --allow-test-fork"
@@ -203,6 +199,16 @@ for key in locked_contract destination nonce fork_block chain_id test_fork eoa_s
     fi
 done
 [ "${compare_failed}" -eq 0 ] || die "the manifest does not match what the case does on a fresh fork."
+
+# The submitter's kit may differ from this one (scripts, images): not a failure, but worth knowing.
+claimed_commit="$(jq -r '.kit_commit // "unknown"' "${manifest}")"
+local_commit="$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$(jq -r '.kit_dirty // false' "${manifest}")" = "true" ]; then
+    echo "WARNING: the package was built with a kit that had local modifications (kit_dirty=true, commit ${claimed_commit})." >&2
+fi
+if [ "${claimed_commit}" != "${local_commit}" ]; then
+    echo "WARNING: the package was built with kit commit ${claimed_commit}; this verifier is at ${local_commit}." >&2
+fi
 
 # The signatures in the package are exactly the ones checked in step 2 (generate.sh verified them
 # on the unpacked signatures.json); show who signed.
