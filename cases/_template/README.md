@@ -5,20 +5,7 @@ Create your case from the repo root with `cases/new-case.sh <your-case-id>` (e.g
 `cases/<your-case-id>/` (a plain `cp -r` works too). Edit your copy — leave
 `cases/_template/` itself untouched so other stakeholders can copy it too.
 
-## 1. Start the shadow-fork
-
-From the repo root, in its own terminal:
-
-```bash
-cd setup
-cp .env.example .env   # optional, defaults work out of the box
-source .env
-./fork.sh
-```
-
-Leave it running — everything below connects to it.
-
-## 2. Declare what you recover, then fill in and run move.sh
+## 1. Declare what you recover, then fill in move.sh
 
 First, fill in `recovery.json` in your case directory: the explicit statement of what
 you want to recover and where it should end up. Polygon checks the simulation against it.
@@ -35,7 +22,7 @@ you want to recover and where it should end up. Polygon checks the simulation ag
 ```
 
 - `locked_contract` — the Smart Contract holding the funds.
-- `destination` — the final wallet (EOA) that receives them; it must sign too (step 3).
+- `destination` — the final wallet (EOA) that receives them; it must sign too (step 2).
 - `funds` — one entry per asset: `"native"` or the token's address, and the `amount` in
   base units (wei for ETH) **as a string**. List each token once; add the amounts up.
 
@@ -50,11 +37,17 @@ call with whatever actually moves your locked funds to your destination EOA. See
 [`../../recovery-tx/impersonate-and-move.template.sh`](../../recovery-tx/impersonate-and-move.template.sh)
 for the annotated template this was copied from.
 
-Then, from the repo root:
+You don't need to run it yourself: `submission/prepare-submission.sh` (step 4) starts a fresh
+shadow-fork and runs `move.sh` on it. If you want to try it first, start a fork in its own
+terminal (`cd setup && cp .env.example .env && source .env && ./fork.sh`, see the repo README),
+leave it running and, from the repo root:
 
 ```bash
 ./recovery-tx/run.sh cases/<your-case-id>/move.sh
 ```
+
+Stop and restart that fork before step 4 (or pass `--no-fork` there), since `move.sh` already
+moved the funds on it.
 
 `move.sh` runs inside a sandbox container (Docker, the Foundry image plus `jq` and `curl`; built the
 first time you run it, which needs internet once): it only sees the fork (at `$RPC_URL`, which the
@@ -63,9 +56,9 @@ sandbox sets itself), has no internet and no access to your machine. So it must 
 template; it can use `bash`, `cast`/`forge`, `jq`, `curl` and the basic Linux utilities. The same
 sandbox is used when Polygon verifies your submission.
 
-Note the transaction hash it prints — you'll need it for submission.
+If you ran it, note the transaction hash it prints — you can use it in step 3.
 
-## 3. Sign the ownership-proof message
+## 2. Sign the ownership-proof message
 
 For every EOA impersonated in `move.sh`, **and** for your destination EOA, sign the
 proof message. Contracts impersonated in `move.sh` have no private key — sign instead
@@ -107,7 +100,7 @@ Keep the Etherscan link for your submission.
 ]
 ```
 
-## 4. Double-check you didn't miss a signature
+## 3. (Optional) Double-check you didn't miss a signature
 
 From the repo root, pass every tx hash `move.sh` printed:
 
@@ -123,9 +116,9 @@ cover them with their controlling EOAs' signatures. It only checks senders, thou
 it can't know about your destination EOA (it never sends anything), so that signature
 is still on you to remember.
 
-## 5. Package and submit
+## 4. Package and submit
 
-`submission/prepare-submission.sh` does steps 2 to 4 for you, guides you through what is missing and packages the result. It starts a
+`submission/prepare-submission.sh` does the checks of steps 1 to 3 for you, guides you through what is missing and packages the result. It starts a
 **fresh fork** itself (with `setup/fork.sh`, using the same `L2_RPC_URL`... settings; `source setup/.env`
 first if you use one) and stops it when it ends, so stop any fork you have running on the
 same port before. Run, from the repo root:
@@ -136,7 +129,7 @@ same port before. Run, from the repo root:
 
 It validates `recovery.json`, runs `move.sh`, checks that the funds declared in
 `recovery.json` really moved from the locked contract to your destination, works out
-which EOAs were impersonated, checks that `signatures.json` (filled in beforehand, step 3) has a valid signature for each of them and for the
+which EOAs were impersonated, checks that `signatures.json` (filled in beforehand, step 2) has a valid signature for each of them and for the
 destination, writes `cases/<your-case-id>/<your-case-id>-<timestamp>.tgz` and tells you
 where to send it and how to verify it. It never
 signs: if a signature is missing it stops and prints the exact command to make it; sign,

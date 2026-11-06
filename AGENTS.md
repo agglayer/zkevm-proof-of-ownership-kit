@@ -104,7 +104,7 @@ plain and step-by-step.
   no `..`), checks the manifest sha256s, re-runs the case on a fresh fork through `helpers/generate.sh`
   (recovery.json, impersonated senders, signatures) and compares locked contract, destination, nonce,
   fork block, senders and amounts with `manifest.json` (not tx hashes/gas). The packaged `move.sh`
-  runs in the sandbox (see the invariants). `SUBMIT.md` is the checklist of what the stakeholder sends back to Polygon.
+  runs in the sandbox (see the invariants). `SUBMIT.md` says what the stakeholder sends back to Polygon (the `.tgz`, plus the email) and what is in it.
 - `test/e2e/` — end-to-end test (geth `--dev` in Docker + `setup/fork.sh` + a whole case through
   `prepare-submission.sh`), run by `.github/workflows/e2e.yml`.
 
@@ -121,7 +121,8 @@ manager. Scripts must run on macOS's stock Bash 3.2 as well as Linux Bash 5.
 All commands run from the **repo root**.
 
 ```bash
-# 1. Fork (own terminal, leave running)
+# 1. (Optional, only to try move.sh by hand) Fork in its own terminal, leave running.
+#    prepare-submission.sh (step 5) starts its own fork, so you don't need this for the submission.
 cd setup && cp .env.example .env && source .env && ./fork.sh
 
 # 2. Start a case and fill in cases/<case-id>/move.sh
@@ -234,10 +235,10 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 | :-------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------------------------------: |
 |              `ownership-proof/message-template.txt`             | `README.md` (Message format), `cases/_template/README.md` example entry, `verify-signature.sh` (assumes placeholder order address → nonce → date) |
 |               `sign-message.sh` flags or env vars               |                                       `README.md`, `cases/_template/README.md`, `AGENTS.md` workflow section                                      |
-| `list-impersonated.sh` / `verify-signature.sh` checks or output |                                      `cases/_template/README.md` step 4, `submission/SUBMIT.md`, `AGENTS.md`                                      |
+| `list-impersonated.sh` / `verify-signature.sh` checks or output |                                      `cases/_template/README.md` step 3, `submission/SUBMIT.md`, `AGENTS.md`                                      |
 |                   `fork.sh` behavior or output                  |                                    `README.md` (Running the shadow-fork), `submission/SUBMIT.md` fork-logs item                                   |
 |          `recovery-tx/impersonate-and-move.template.sh`         |                                                   `cases/_template/move.sh` (keep them in sync)                                                   |
-|            `recovery.json` fields (`validate-recovery.sh`)         | `cases/_template/recovery.json` and README step 2, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                                       |
-|           `submission/prepare-submission.sh` / `verify-submission.sh` / `helpers/*` checks or output | `submission/SUBMIT.md` ("in the package" marks), `cases/_template/README.md` step 5, `test/e2e/run.sh` steps 8-9, `AGENTS.md` |
+|            `recovery.json` fields (`validate-recovery.sh`)         | `cases/_template/recovery.json` and README step 1, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                                       |
+|           `submission/prepare-submission.sh` / `verify-submission.sh` / `helpers/*` checks or output | `submission/SUBMIT.md` (contents table), `cases/_template/README.md` step 5, `test/e2e/run.sh` steps 8-9, `AGENTS.md` |
 |                 Files added/removed/implemented                 |                                                `README.md` layout, `AGENTS.md` Repository Structure                                               |
-|                     What stakeholders submit                    |                      `submission/SUBMIT.md`, `cases/_template/README.md` step 5, `submission/helpers/` (package layout, manifest)                     |
+|                     What stakeholders submit                    |                      `submission/SUBMIT.md`, `cases/_template/README.md` step 4, `submission/helpers/` (package layout, manifest)                     |

@@ -120,7 +120,7 @@ done
 echo "Case: ${case_id} (${case_dir})"
 
 if ! "${repo_root}/recovery-tx/validate-recovery.sh" "${case_dir}/recovery.json"; then
-    die "fix ${rel_case}/recovery.json (see ${rel_case}/README.md step 2) and run this again."
+    die "fix ${rel_case}/recovery.json (see ${rel_case}/README.md step 1) and run this again."
 fi
 
 if grep -qi '0x0000000000000000000000000000000000dEaD' "${case_dir}/move.sh"; then
@@ -132,7 +132,7 @@ signatures_path="${case_dir}/signatures.json"
 if [ ! -f "${signatures_path}" ] || ! jq -e 'type == "array" and length > 0' "${signatures_path}" >/dev/null 2>&1; then
     echo
     echo "NOTE: ${rel_case}/signatures.json has no signatures yet. Every EOA impersonated in"
-    echo "      move.sh and your destination wallet must sign (see ${rel_case}/README.md step 3)."
+    echo "      move.sh and your destination wallet must sign (see ${rel_case}/README.md step 2)."
     echo "      The simulation below will tell you exactly which addresses and how to sign them."
     [ -f "${signatures_path}" ] || echo "[]" >"${signatures_path}"
 else
@@ -193,4 +193,4 @@ echo "HOW TO VERIFY IT (what Polygon checks; run from the repo root, on a machin
 echo "happy to run move.sh again)"
 echo "  submission/verify-submission.sh ${out_file}${gen_flags}"
 echo
-echo "Full checklist: submission/SUBMIT.md"
+echo "What is in the package and how to send it: submission/SUBMIT.md"
