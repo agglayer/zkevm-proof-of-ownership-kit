@@ -1,54 +1,54 @@
-# Submission checklist
+# What to submit
 
-Once you've completed the three steps in the main [README](../README.md) — fork,
-simulate, sign — package the following and email it to Polygon.
+**The `.tgz` that [`submission/prepare-submission.sh cases/<your-case-id>`](prepare-submission.sh)
+writes** (`cases/<your-case-id>/<your-case-id>-<timestamp>.tgz`) — nothing else. Check it first
+with [`submission/verify-submission.sh`](verify-submission.sh) (see below).
 
-**Delivery channel:** email everything to
-[`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology). Put your
-case reference in the subject line and attach the files (or a zip of your
-`cases/<your-case-id>/` directory plus the fork logs).
+Email it to [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology), with your
+case reference (the support thread or case ID this submission relates to) in the subject line. If
+`move.sh` impersonates a **contract** (it has no private key, so the EOA(s) that control it sign
+instead), also explain in the email how they control it — e.g. which `owner()` / `getOwners()` call
+returns them at the fork block. The package lists those contracts in `manifest.json`
+(`contract_senders`).
 
-## What to submit
+## What is in the package
 
-- [ ] **Fork logs** — full console output from `setup/fork.sh`, including the latest
-      published block it fetched and its `fork_block matches the network's latest block`
-      confirmation line.
-- [ ] **Simulated recovery transaction hash(es)** — the tx hash(es) produced by
-      `recovery-tx/run.sh` showing the funds moving from the locked Smart Contract to your
-      destination EOA on the fork.
-- [ ] **One signature per impersonated EOA** — every EOA impersonated to execute the
-      recovery transaction (owner(s)/signer(s) used to authorize it), each signing the
-      fixed proof message from `ownership-proof/message-template.txt` with its real key.
-- [ ] **Controller signatures for any impersonated contract** — a contract has no
-      private key, so if `move.sh` impersonated a contract directly, submit signatures
-      from the EOA(s) that control it on-chain (owner, multisig signers meeting the
-      threshold, admin) plus a short explanation of that control path (e.g. which
-      `owner()` / `getOwners()` call returns them at the fork block).
-- [ ] **One signature for the final destination EOA** — the account that received the
-      funds in the simulation, proving you control where the recovered funds would
-      actually land.
-- [ ] **The nonce and date used** in the signed message, so Polygon can reconstruct the
-      exact message and verify each signature against it.
-- [ ] **Etherscan links** — for any signature published via
-      [etherscan.io/verifiedSignatures](https://etherscan.io/verifiedSignatures)
-      instead of `sign-message.sh`, the link to it.
-- [ ] **Contact info / case reference** — the support thread or case ID this submission
-      relates to, so it can be matched to the original report.
+Laid out as `<case-id>/`:
 
-Before packaging any of this, run
-[`recovery-tx/list-impersonated.sh --signatures cases/<your-case-id>/signatures.json <tx-hash> ...`](../recovery-tx/list-impersonated.sh)
-with every tx hash from `recovery-tx/run.sh` — it derives the impersonated addresses
-from the transactions' own mined receipts, verifies every signature in
-`signatures.json` with `ownership-proof/verify-signature.sh` (the same check Polygon runs
-on your submission), and fails loudly if any entry is invalid or any EOA sender is still
-missing a signature. It lists contract senders separately, since those are covered by
-their controllers' signatures. It only checks senders, so it can't catch a missing
-signature for your destination EOA — double-check that one yourself.
+| File | What it is |
+| --- | --- |
+| `recovery.json` | What you recover: the locked contract, the funds (token and amount) and the destination wallet. |
+| `move.sh` | The simulated recovery that Polygon re-runs on its own fork. |
+| `signatures.json` | One signature per EOA impersonated in `move.sh` plus the destination, each over the fixed proof message, which includes the locked contract, the destination, a hash of `recovery.json` and `move.sh`, the nonce and the date: a signature only counts for those exact files. |
+| `manifest.json` | What the run found: tx hashes, impersonated addresses, nonce, balances before and after, whether it was a test fork, and the sha256 of every file. |
+| `fork.log` | Full output of `setup/fork.sh`, with the halt block and its confirmation line. Informational: the verifier checks its own fork, not this file. |
+| `run.log` | Output of `move.sh` on the fork. Informational, like `fork.log` (only its hash is checked). |
+| `etherscan-links.txt` | Only if you put one in your case directory: links to signatures published at [etherscan.io/verifiedSignatures](https://etherscan.io/verifiedSignatures) instead of `sign-message.sh`. |
+
+## Verifying a package
+
+```bash
+submission/verify-submission.sh <your-case-id>-<timestamp>.tgz
+```
+
+On receiving your submission, Polygon first **inspects it manually** (the email, `recovery.json`,
+`move.sh` and who has to sign) before running anything. Only then does it run this same
+script, which unpacks the `.tgz`, checks the file hashes in `manifest.json`, re-runs `move.sh`
+on a fresh fork, checks it against `recovery.json`, derives the impersonated addresses,
+verifies every signature and compares all of it with `manifest.json`. The packaged `move.sh`
+runs inside a sandbox container that can only reach the fork (no internet, nothing of your
+machine), the same one `prepare-submission.sh` uses.
+
+Passing the script is necessary, not sufficient: the manual inspection can still send a
+submission back, e.g. when the explanation of how the EOAs control an impersonated contract
+is missing or does not hold up. When `move.sh` impersonates a contract (a multisig, an owner
+contract), the script cannot prove who controls it: it ends with `MANUAL REVIEW REQUIRED` and exit
+code 3 instead of `VERIFIED` (0). Impersonating the locked contract itself is refused outright.
 
 ## Why every signature is mandatory
 
 Impersonation on a shadow-fork proves nothing about real-world control — anyone can
 impersonate any address on a fork they run locally. Recovery certificates are only
-generated after every required signature above is submitted and independently verified.
+generated after every required signature is submitted and independently verified.
 Incomplete submissions (missing a signer, mismatched nonce/date, wrong message format)
 will be sent back for correction before any certificate work begins.

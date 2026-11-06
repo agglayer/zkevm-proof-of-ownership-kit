@@ -1,1 +1,1 @@
-I confirm ownership of <address> for zkEVM fund recovery — nonce: <nonce> — date: <date>
+I confirm ownership of <address> for zkEVM fund recovery — locked contract: <locked_contract> — destination: <destination> — case hash: <case_hash> — nonce: <nonce> — date: <date>

@@ -20,7 +20,8 @@ halted zkEVM mainnet.**
 
 It walks you through three steps:
 
-1. **Spin up a shadow-fork** of zkEVM mainnet state, pinned to a known reference block.
+1. **Spin up a shadow-fork** of zkEVM mainnet state, pinned to a known reference block (the kit
+   starts it for you when you generate the submission).
 2. **Impersonate** whatever addresses are needed (the Smart Contract, its owner(s),
    signers, etc.) on that fork to simulate the transactions that would move your locked
    funds to a destination EOA you control.
@@ -45,27 +46,39 @@ zkevm-proof-of-ownership-kit/
 ├── README.md                          # this file
 ├── setup/
 │   ├── fork.sh                        # spins up the shadow-fork against zkEVM mainnet state
-│   └── .env.example                   # RPC endpoint, Anvil port, block time overrides
+│   └── .env.example                   # RPC endpoint, Anvil port, block time, image overrides
 ├── recovery-tx/
 │   ├── impersonate-and-move.template.sh   # annotated template: impersonate the
 │   │                                        # relevant addresses and move funds to an EOA
-│   ├── run.sh                          # runs a case's move.sh against the fork
+│   ├── run.sh                          # runs a case's move.sh against the fork, in a sandbox container
+│   ├── validate-recovery.sh            # checks a case's recovery.json (offline, jq only)
 │   └── list-impersonated.sh            # derives impersonated addresses from tx receipts,
 │                                          # cross-checks them against a case's signatures.json
 ├── ownership-proof/
 │   ├── message-template.txt            # fixed message format, for consistent signatures
+│   ├── case-hash.sh                    # hash of recovery.json + move.sh that goes into the message
 │   ├── sign-message.sh                 # signs the message via ledger/keystore/prompt for
 │   │                                     # one address and appends it to a signatures.json
 │   └── verify-signature.sh             # verifies every entry of a signatures.json (run by
 │                                         # Polygon on submission; run it yourself first)
 ├── cases/
 │   ├── README.md                       # how to start a new case from the template
-│   └── _template/                      # copy this to cases/<your-case-id>/
+│   ├── new-case.sh                     # copies _template/ to cases/<your-case-id>/
+│   └── _template/                      # the template new-case.sh copies
 │       ├── README.md                   # step-by-step walkthrough for your case
+│       ├── recovery.json               # which funds, from which contract, to which wallet
 │       ├── move.sh                     # your copy of the recovery-tx template, filled in
 │       └── signatures.json             # one {address, message, signature} entry per address
-└── submission/
-    └── SUBMIT.md                       # checklist of what to submit back to Polygon
+├── submission/
+│   ├── prepare-submission.sh           # THE script to run: checks your case on a fresh fork,
+│   │                                     # builds the .tgz and tells you where to send it
+│   ├── verify-submission.sh            # verifies a .tgz (what Polygon runs; you can too before sending)
+│   ├── helpers/                        # called by prepare-submission.sh, no need to run them
+│   │   ├── generate.sh                 # runs a case on the fork and checks move.sh, recovery.json
+│   │   │                                 # and signatures.json fit together (writes manifest.json, run.log)
+│   │   └── package.sh                  # packs generate.sh's output into the .tgz
+│   └── SUBMIT.md                       # what to submit (the .tgz) and what is in it
+└── test/e2e/                           # end-to-end test (geth + fork + a case), run in CI
 ```
 
 ## Who needs a signature
@@ -76,9 +89,15 @@ receives the recovered funds. If your case involves multiple owners or a multisi
 impersonated signer needs to submit their own signature.
 
 A contract has no private key and cannot sign. If the simulation impersonates a
-contract directly, its ownership is proven by signatures from the EOA(s) that control it
-on-chain (owner, multisig signers, admin), together with an explanation of that control
-path in your submission.
+contract that **controls** the funds (a multisig or owner contract, an admin...), its ownership is
+proven by signatures from the EOA(s) that control it on-chain, together with an explanation of that
+control path in your submission. Nothing automatic can check that, so such a submission is **not**
+given a plain `VERIFIED`: `verify-submission.sh` ends with "MANUAL REVIEW REQUIRED" (exit code 3).
+
+You **cannot impersonate the locked contract itself** to send its funds (`cast send --from
+<locked_contract> ...`): that would move them with no signature at all, so `prepare-submission.sh`
+refuses it. The funds must move through the contract's own logic (e.g. a `withdraw` function), called by
+an EOA that signs.
 
 ## Message format
 
@@ -86,8 +105,13 @@ Ownership is proven with a **plain fixed message**, signed via standard `persona
 (EIP-191), one signature per address:
 
 ```text
-I confirm ownership of <address> for zkEVM fund recovery — nonce: <nonce> — date: <date>
+I confirm ownership of <address> for zkEVM fund recovery — locked contract: <locked_contract> — destination: <destination> — case hash: <case_hash> — nonce: <nonce> — date: <date>
 ```
+
+The message is **bound to your case**: it names the locked contract and the destination (from your
+`recovery.json`) and carries a *case hash* of `recovery.json` and `move.sh`. So a signature only counts
+for those exact files, and it cannot be reused in another case (for instance with a different
+destination). See [What a signature is bound to](#what-a-signature-is-bound-to).
 
 Use `ownership-proof/sign-message.sh` to produce each signature — do not sign an ad-hoc
 message on your own, as it will not match what Polygon's verification step expects. It
@@ -95,30 +119,167 @@ signs through `cast` with a hardware wallet (`--ledger` / `--trezor`), a Foundry
 (`--account`), or a hidden key prompt (`--interactive`); raw private keys on the command
 line are refused.
 
+### What a signature is bound to
+
+- **`<locked_contract>` and `<destination>`**: read from your `recovery.json`. **Check them in the
+  message before signing**: they say where the funds go.
+- **`<case_hash>`**: `sha256` of these two lines, the `sha256` of each file's exact bytes and its name:
+
+  ```text
+  <sha256 of recovery.json>  recovery.json
+  <sha256 of move.sh>  move.sh
+  ```
+
+  `ownership-proof/case-hash.sh cases/<id>` prints it (by hand: `cd cases/<id> && sha256sum recovery.json
+  move.sh | sha256sum`).
+
+**Any change to `recovery.json` or `move.sh` — even a space — invalidates every signature**, and
+`sign-message.sh`, `prepare-submission.sh` and the verifier say so. So: finish both files, **read `move.sh`
+(by signing you approve that script)**, and only then collect the signatures; if you change a file
+afterwards, empty `signatures.json` (`echo '[]' > cases/<id>/signatures.json`) and sign again with every
+address. Each signer should check the destination in the message before signing.
+
+### Choosing the NONCE
+
+The nonce is just a label that ties together all the signatures of your case: it goes inside the
+signed message, and Polygon rejects a `signatures.json` whose entries do not all share it. Pick any
+short string made of letters, digits, `-` and `_` (no spaces) and use **the same one for every
+signature of the case**. A unique one is convenient, e.g. the date plus a random suffix:
+
+```bash
+export NONCE="$(date -u +%Y%m%d%H%M%S)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"   # e.g. 20261106103015-9f3a1c07
+```
+
+If you don't want to pick one, run `submission/prepare-submission.sh` with an empty
+`signatures.json`: it prints the nonce it would use inside the `sign-message.sh` commands for the
+missing signatures; use that one. Once the file has a signature, its nonce is the one to keep.
+
+The date in the message is the day you sign (UTC); signatures made on different days are fine.
+
 No terminal, or a cold wallet only usable from the browser? Print the exact message with
-`sign-message.sh --print-message` and sign it at
+`CASE_DIR=cases/<your-case-id> ADDRESS=0x... NONCE=<nonce> ownership-proof/sign-message.sh --print-message` and sign it at
 [etherscan.io/verifiedSignatures](https://etherscan.io/verifiedSignatures) instead — see
 [`cases/_template/README.md`](cases/_template/README.md).
 
 ## Prerequisites
 
-- The [Foundry toolchain](https://getfoundry.sh) — provides both `anvil` (the fork) and
-  `cast` (impersonation, sending transactions, and signing messages). Everything in this
-  kit is plain bash built on top of `cast`; no Node/Go toolchain required.
+- [Docker](https://docs.docker.com/get-docker/), running — the shadow-fork (`anvil`) runs
+  from the official Foundry image, so Anvil itself needs no install.
+- The [Foundry toolchain](https://getfoundry.sh) — provides `cast` (impersonation, sending
+  transactions, and signing messages). Everything in this kit is plain bash built on top
+  of `cast`; no Node/Go toolchain required.
 - `curl` and `jq`.
+
+`setup/fork.sh` checks at start that `docker` (and its daemon), `curl` and `jq` are
+available and tells you what is missing; it only warns if `cast` is not installed.
 
 ## How to use this kit
 
-1. **Fork.** Follow `setup/` (see below) to spin up and verify your shadow-fork.
-2. **Start your case.** Copy [`cases/_template/`](cases/_template/README.md) to
-   `cases/<your-case-id>/` and follow its README — it walks you through filling in
-   `move.sh`, running it against the fork, and collecting signatures into
-   `signatures.json` for every impersonated address plus your destination EOA.
-3. **Submit.** Follow [`submission/SUBMIT.md`](submission/SUBMIT.md) to package
-   everything and email it to
-   [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology) for review.
+All commands run from the repo root. You don't start any fork or Docker container yourself:
+the last step does it.
 
-### Running the shadow-fork
+1. **Create your case.**
+
+   ```bash
+   cases/new-case.sh <your-case-id>
+   ```
+
+   It copies [`cases/_template/`](cases/_template/README.md) to `cases/<your-case-id>/`
+   (`recovery.json`, `move.sh`, `signatures.json`, and a README with the details of each step).
+
+2. **Write `recovery.json`.** The explicit statement of what you recover: the locked contract,
+   the funds (`"native"` or a token address, amounts in base units as strings) and the destination
+   wallet (an EOA you control). Check it with:
+
+   ```bash
+   ./recovery-tx/validate-recovery.sh cases/<your-case-id>/recovery.json
+   ```
+
+3. **Write `move.sh`.** The simulated recovery: the `cast` calls that impersonate the needed
+   addresses and move the funds to your destination. Start from the template that
+   `new-case.sh` copied (annotated in
+   [`recovery-tx/impersonate-and-move.template.sh`](recovery-tx/impersonate-and-move.template.sh)).
+   It runs in a sandbox that only reaches the fork, so it must be self-contained and use
+   `"${RPC_URL}"`.
+
+4. **Fill in `signatures.json`.** Once `recovery.json` and `move.sh` are **final** (the signed message
+   carries a hash of both; if either changes, sign again), one signature for **every address `move.sh`
+   impersonates that is an EOA, plus your destination wallet** (see
+   [Who needs a signature](#who-needs-a-signature)), all with the same nonce:
+
+   ```bash
+   ADDRESS=0x... NONCE=<one-nonce-for-the-whole-case> \
+     ./ownership-proof/sign-message.sh cases/<your-case-id>/signatures.json --ledger
+   # or: --trezor | --account <foundry-keystore-name> | --keystore <path> | --interactive
+   ```
+
+   Repeat for each address (see [Message format](#message-format); the nonce can be any string,
+   see [Choosing the NONCE](#choosing-the-nonce)). Not sure which addresses
+   `move.sh` impersonates? Go to step 5 with what you have: it lists the ones that are missing,
+   with the exact command to sign each.
+
+5. **Generate the submission.**
+
+   ```bash
+   ./submission/prepare-submission.sh cases/<your-case-id>
+   ```
+
+   It checks your case end to end and writes `cases/<your-case-id>/<your-case-id>-<timestamp>.tgz`.
+   If something is wrong or a signature is missing it stops and tells you what to fix; fix it and
+   run it again. At the end it prints the file to send, where to send it
+   ([`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology), see
+   [`submission/SUBMIT.md`](submission/SUBMIT.md)) and how to verify it (next step).
+
+6. **Verify the package before sending it.** Run the same check Polygon runs on receiving it:
+
+   ```bash
+   ./submission/verify-submission.sh cases/<your-case-id>/<your-case-id>-<timestamp>.tgz
+   ```
+
+   It unpacks the `.tgz`, checks the file hashes in `manifest.json`, starts a fresh fork,
+   re-runs the packaged `move.sh` in the sandbox, checks it against the packaged `recovery.json`,
+   derives the impersonated addresses, verifies every signature in `signatures.json` and compares
+   all of it with `manifest.json`. It ends with `VERIFIED: ...` and exit code 0; any problem prints
+   a `FAIL: ...` line saying what does not match. Only send the file if it says `VERIFIED`.
+
+   Like step 5, it starts its own fresh fork. Verify the exact file you are going to send: if you change anything in the case afterwards,
+   go back to step 5 and generate a new package.
+
+## Appendix: what the scripts do inside
+
+### `submission/prepare-submission.sh`
+
+1. **Checks your case**: `recovery.json` is valid, `move.sh` has no template placeholders left,
+   and `signatures.json` exists (an empty one is created if not, and the run then lists who must sign).
+2. **Starts a fresh shadow-fork** (`setup/fork.sh`, pinned to the halt block) and **runs
+   `move.sh` on it inside a sandbox container** (`recovery-tx/run.sh`: Foundry image plus `jq`
+   and `curl`, no internet, no access to your machine, only the fork reachable). Then, through
+   `submission/helpers/generate.sh`, it:
+   - checks that the funds declared in `recovery.json` really moved from the locked contract to
+     the destination (gas paid by the destination is added back);
+   - works out which EOAs sent transactions (the impersonated ones) and requires a valid
+     signature in `signatures.json` for each of them and for the destination;
+   - writes `manifest.json` (tx hashes, addresses, nonce, balances before/after, sha256 of each
+     file) and `run.log` next to copies of `recovery.json`, `move.sh`, `signatures.json` and
+     `fork.log`.
+
+   The fork is stopped at the end, also on failure.
+3. **Packs** those files into the `.tgz` (`submission/helpers/package.sh`).
+4. **Tells you** where to send it and how to verify it.
+
+Options: `--output-dir <dir>`,
+`--allow-test-fork` (testing only; such a package is not valid for a real submission).
+
+### `submission/verify-submission.sh <tgz>`
+
+What Polygon runs on receiving a submission, and what you run in step 6 before sending it. It unpacks
+the `.tgz` safely, checks the file hashes in `manifest.json`, re-runs `move.sh` on a fresh fork
+(same sandbox), checks it against `recovery.json`, derives the impersonated addresses, verifies
+every signature and compares all of it with `manifest.json`.
+
+### Running the shadow-fork by hand (optional)
+
+You don't need this to submit. Do it only to try your `move.sh` first with `recovery-tx/run.sh`.
 
 ```bash
 cd setup
@@ -130,7 +291,19 @@ source .env
 `fork.sh` pins the fork to the network's halt block and refuses to start if that block
 doesn't match the RPC's current latest block — so a stale or wrong RPC endpoint fails
 loudly instead of silently forking the wrong state. Leave it running in its own terminal;
-it's the node the rest of the kit connects to.
+it's the node `recovery-tx/run.sh` connects to.
+
+**Stop it before running `prepare-submission.sh` or `verify-submission.sh`**: they start their
+own fresh fork on the same port (8545 by default) and refuse to run while something answers there.
+To stop it, press Ctrl-C in its terminal, or run `docker rm -f zkevm-shadow-fork-8545` (the number
+is the port).
+
+Everything it prints (including Anvil's own output) is also saved to `setup/fork.log`
+(override with `FORK_LOG`), overwritten on every start — it goes into your submission, so don't
+copy the console by hand. A submission must use the official RPC, `https://zkevm-rpc.com/` (the default, so leave `L2_RPC_URL`
+unset): `prepare-submission.sh` and `verify-submission.sh` refuse another `L2_RPC_URL` or a `FORK_BLOCK`
+unless you pass `--allow-test-fork`, and a package made that way is not valid for a real submission (and
+its log, which is not masked, may contain your RPC URL).
 
 ## Support
 
