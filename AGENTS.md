@@ -170,7 +170,10 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
   `recovery-tx/sandbox/Dockerfile` (Foundry + `jq` + `curl`); keep it minimal.
 - **Contracts can't sign.** Ownership of an impersonated contract is proven by signatures from
   the EOA(s) that control it on-chain. `list-impersonated.sh` lists contract senders (non-empty
-  `cast code`) separately instead of requiring a signature for them.
+  `cast code`, decided on the state before `move.sh`) separately instead of requiring a signature for
+  them, and `verify-submission.sh` then ends with "MANUAL REVIEW REQUIRED" and exit code 3 instead of a
+  plain `VERIFIED` (nothing automatic proves who controls a contract). **The locked contract itself can
+  never be a sender** (`generate.sh` fails): it would move the funds with no signature at all.
 - **The proof message is fixed.** `message-template.txt` must stay identical to the copies in
   `README.md` and `cases/_template/README.md` (it carries the locked contract, the destination and the
   case hash, so signatures are bound to a case's `recovery.json` and `move.sh`). Changing it invalidates every signature already

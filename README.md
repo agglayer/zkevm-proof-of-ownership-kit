@@ -89,9 +89,15 @@ receives the recovered funds. If your case involves multiple owners or a multisi
 impersonated signer needs to submit their own signature.
 
 A contract has no private key and cannot sign. If the simulation impersonates a
-contract directly, its ownership is proven by signatures from the EOA(s) that control it
-on-chain (owner, multisig signers, admin), together with an explanation of that control
-path in your submission.
+contract that **controls** the funds (a multisig or owner contract, an admin...), its ownership is
+proven by signatures from the EOA(s) that control it on-chain, together with an explanation of that
+control path in your submission. Nothing automatic can check that, so such a submission is **not**
+given a plain `VERIFIED`: `verify-submission.sh` ends with "MANUAL REVIEW REQUIRED" (exit code 3).
+
+You **cannot impersonate the locked contract itself** to send its funds (`cast send --from
+<locked_contract> ...`): that would move them with no signature at all, so `prepare-submission.sh`
+refuses it. The funds must move through the contract's own logic (e.g. a `withdraw` function), called by
+an EOA that signs.
 
 ## Message format
 

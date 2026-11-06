@@ -12,7 +12,10 @@
 #   3. compares what it found on its own fork with what the manifest claims: locked contract,
 #      destination, nonce, fork block, impersonated addresses (EOA and contract), and the
 #      amounts moved. (Transaction hashes and gas are not compared: they depend on the run.)
-#   The fork is stopped at the end. Exit code 0 = verified, 1 = not.
+#   The fork is stopped at the end. Exit code 0 = verified, 1 = not, 3 = every automatic check
+#   passed but MANUAL REVIEW IS REQUIRED: some contract sent transactions (it cannot sign, so
+#   nothing automatic proves who controls it: the controlling EOAs, which the submitter explains in
+#   the email, must be checked by hand).
 #
 # NOTE: step 2 executes the packaged move.sh (a Bash script written by the submitter), but inside
 # a sandbox container that only reaches the fork (see recovery-tx/run.sh): no internet, nothing
@@ -215,11 +218,18 @@ fi
 echo
 echo "Impersonated EOAs (and the destination) with a valid signature:"
 jq -r '.required_signers[]' "${manifest}" | sed 's/^/  /'
+manual_review=0
 if jq -e '(.contract_senders | length) > 0' "${manifest}" >/dev/null; then
+    manual_review=1
     echo "Contracts that sent transactions (no signature possible; the submitter must explain their"
     echo "controlling EOAs in the email — check that explanation by hand):"
     jq -r '.contract_senders[]' "${manifest}" | sed 's/^/  /'
 fi
 
 echo
+if [ "${manual_review}" -eq 1 ]; then
+    echo "AUTOMATIC CHECKS PASSED — MANUAL REVIEW REQUIRED: ${tgz##*/} (case ${case_id}, nonce $(jq -r '.nonce' "${manifest}"))."
+    echo "Not verified end to end: contracts sent transactions and nothing automatic proves who controls them."
+    exit 3
+fi
 echo "VERIFIED: ${tgz##*/} (case ${case_id}, nonce $(jq -r '.nonce' "${manifest}"))"

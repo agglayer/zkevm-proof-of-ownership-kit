@@ -334,6 +334,12 @@ while IFS= read -r tx; do
     fi
 done <<<"${tx_hashes}"
 senders="$(printf '%s' "${senders}" | sort -u)"
+# Impersonating the locked contract itself proves nothing about who controls it, and it would move
+# the funds with no signature at all (a contract sender needs none): the funds must move through the
+# contract's own logic, called by an EOA that signs.
+if grep -Fxq "$(lower "${locked}")" <<<"${senders}"; then
+    die "move.sh sends a transaction FROM the locked contract (${locked}). Impersonating the contract itself is not accepted: the funds must be moved by the contract's own logic (e.g. a withdraw function), called by an EOA that signs."
+fi
 
 result_failed=0
 result_balances="[]"

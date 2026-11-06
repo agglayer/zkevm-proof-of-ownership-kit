@@ -152,7 +152,17 @@ deploy_json="$(cd "${WORKDIR}/forge" && forge create src/Vault.sol:Vault --root 
 VAULT="$(printf '%s' "${deploy_json}" | jq -r '.deployedTo')"
 [[ "${VAULT}" =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "vault deployment failed"
 cast send "${VAULT}" --value "${FUND_AMOUNT}" --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" >/dev/null
-echo "  vault ${VAULT}, owner ${OWNER}"
+# A second vault owned by a CONTRACT (a stand-in for a multisig): moving its funds means
+# impersonating that contract, which cannot sign, so the verifier asks for a manual review.
+CONTROLLER="$(cd "${WORKDIR}/forge" && forge create src/Vault.sol:Vault --root . --broadcast --json \
+    --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" | jq -r '.deployedTo')"
+VAULT2="$(cd "${WORKDIR}/forge" && forge create src/Vault.sol:Vault --root . --broadcast --json \
+    --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" | jq -r '.deployedTo')"
+[[ "${CONTROLLER}" =~ ^0x[0-9a-fA-F]{40}$ && "${VAULT2}" =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "controller / vault2 deployment failed"
+cast send "${VAULT2}" --value 1ether --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" >/dev/null
+cast send "${VAULT2}" "transferOwnership(address)" "${CONTROLLER}" --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" >/dev/null
+vault2_wei="$(balance_wei "${VAULT2}" "${GETH_URL}")"
+echo "  vault ${VAULT}, owner ${OWNER}; vault2 ${VAULT2} owned by the contract ${CONTROLLER}"
 
 vault_wei="$(balance_wei "${VAULT}" "${GETH_URL}")"
 [ "${vault_wei}" = "5000000000000000000" ] || fail "vault balance on geth is ${vault_wei}"
@@ -344,6 +354,34 @@ expect_fail "prepare-submission.sh fails when move.sh changed after signing" \
     pkg "${CASE_EDITED}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -q "case hash" "${WORKDIR}/neg.out" || fail "expected the case hash message"
 
+# Negative: a move.sh that sends the funds FROM the locked contract itself (impersonating it, with
+# no EOA signing anything) is refused.
+CASE_FROMVAULT="${WORKDIR}/case-fromvault"
+cp -r "${CASE_DIR}" "${CASE_FROMVAULT}"
+write_recovery "${CASE_FROMVAULT}/recovery.json" "${vault_wei}"
+cat >"${CASE_FROMVAULT}/move.sh" <<FROMVAULT
+#!/bin/bash
+set -euo pipefail
+cast send --unlocked --from "${VAULT}" "${DEST}" --value "${vault_wei}" --json --rpc-url "\${RPC_URL}"
+FROMVAULT
+expect_fail "prepare-submission.sh refuses a move.sh that sends from the locked contract itself" \
+    pkg "${CASE_FROMVAULT}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "FROM the locked contract" "${WORKDIR}/neg.out" || fail "expected the 'from the locked contract' message"
+
+# Negative: evm_mine with a timestamp (a time warp) is refused by the sandbox's RPC allowlist.
+CASE_WARP="${WORKDIR}/case-warp"
+cp -r "${CASE_DIR}" "${CASE_WARP}"
+write_recovery "${CASE_WARP}/recovery.json" "${vault_wei}"
+cat >"${CASE_WARP}/move.sh" <<WARP
+#!/bin/bash
+set -euo pipefail
+cast rpc evm_mine '{"timestamp": 4102444800}' --rpc-url "\${RPC_URL}" >/dev/null
+cast send --unlocked --from "${OWNER}" "${VAULT}" "withdraw(address,uint256)" "${DEST}" "${vault_wei}" --json --rpc-url "\${RPC_URL}"
+WARP
+expect_fail "prepare-submission.sh refuses a move.sh that warps the clock with evm_mine" \
+    pkg "${CASE_WARP}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "evm_mine with parameters" "${WORKDIR}/neg.out" || fail "expected the evm_mine-with-parameters message"
+
 # Negative: a tx from an unsigned sender still pending when move.sh exits (--async) must be
 # collected (the pool is flushed before the scan), so its sender is required to sign.
 CASE_PENDING="${WORKDIR}/case-pending"
@@ -422,6 +460,29 @@ jq -e '(.required_signers | length) == 1 and (.balances[0].destination_gas_paid 
     "${WORKDIR}/unpacked/case-self/manifest.json" >/dev/null || fail "unexpected manifest for the self-withdraw case"
 echo "  package ok with destination == sender (gas is free on the fork)"
 
+# Positive, with a manual review: the funds of VAULT2 are moved by impersonating the CONTRACT that
+# owns it. Only the destination signs (a contract cannot), and the verifier must not say a plain
+# VERIFIED: exit code 3, "MANUAL REVIEW REQUIRED".
+CASE_CTRL="${WORKDIR}/case-ctrl"
+cp -r "${CASE_DIR}" "${CASE_CTRL}"
+jq -n --arg locked "${VAULT2}" --arg dest "${DEST}" --arg amount "${vault2_wei}" \
+    '{locked_contract: $locked, destination: $dest, funds: [{token: "native", amount: $amount}]}' >"${CASE_CTRL}/recovery.json"
+cat >"${CASE_CTRL}/move.sh" <<CTRL
+#!/bin/bash
+set -euo pipefail
+cast rpc anvil_impersonateAccount "${CONTROLLER}" --rpc-url "\${RPC_URL}" >/dev/null
+cast send --unlocked --from "${CONTROLLER}" "${VAULT2}" "withdraw(address,uint256)" "${DEST}" "${vault2_wei}" --json --rpc-url "\${RPC_URL}"
+CTRL
+echo '[]' >"${CASE_CTRL}/signatures.json"
+ADDRESS="${DEST}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${CASE_CTRL}/signatures.json" \
+    --keystore "${KS_DIR}/dest" --password pw >/dev/null
+pkg "${CASE_CTRL}" --allow-test-fork --output-dir "${WORKDIR}/out-ctrl" >"${WORKDIR}/package-ctrl.out"
+PKG_CTRL="$(ls "${WORKDIR}"/out-ctrl/case-ctrl-*.tgz)"
+tar -xzf "${PKG_CTRL}" -C "${WORKDIR}/unpacked"
+jq -e --arg c "${CONTROLLER}" '(.contract_senders | length) == 1 and ((.contract_senders[0] | ascii_downcase) == ($c | ascii_downcase)) and (.required_signers | length) == 1' \
+    "${WORKDIR}/unpacked/case-ctrl/manifest.json" >/dev/null || fail "unexpected manifest for the contract-sender case"
+echo "  package ok with a contract sender (only the destination signs)"
+
 # ---------------------------------------------------------------- 9. verify-submission.sh
 step "9. submission/verify-submission.sh on the package"
 verify() { # <tgz> [extra args] — starts its own fork like pkg
@@ -434,6 +495,16 @@ grep -q "TEST fork" "${WORKDIR}/neg.out" || fail "expected the test-fork message
 verify "${PKG}" --allow-test-fork >"${WORKDIR}/verify.out" || { cat "${WORKDIR}/verify.out" >&2; fail "verification of a good package failed"; }
 grep -q "^VERIFIED:" "${WORKDIR}/verify.out" || fail "expected VERIFIED"
 echo "  verified: $(basename "${PKG}")"
+
+# A package whose funds are moved by a contract sender is not a plain VERIFIED: exit code 3.
+set +e
+verify "${PKG_CTRL}" --allow-test-fork >"${WORKDIR}/verify-ctrl.out" 2>&1
+ctrl_rc=$?
+set -e
+[ "${ctrl_rc}" -eq 3 ] || { cat "${WORKDIR}/verify-ctrl.out" >&2; fail "expected exit code 3 (manual review) for a contract sender, got ${ctrl_rc}"; }
+grep -q "MANUAL REVIEW REQUIRED" "${WORKDIR}/verify-ctrl.out" || fail "expected MANUAL REVIEW REQUIRED"
+if grep -q "^VERIFIED:" "${WORKDIR}/verify-ctrl.out"; then fail "a contract sender must not give a plain VERIFIED"; fi
+echo "  contract sender: automatic checks pass, manual review required (exit 3)"
 
 # Negative: a file changed after packaging (hash mismatch), a manifest that lies about the
 # nonce (hashes fine), and a path-traversal entry.

@@ -8,14 +8,17 @@ impersonated account authorising anything; anvil_reset can also make the fork co
 does have internet access) fetch an arbitrary URL. So the sandbox only reaches the fork through
 this proxy, which forwards a fixed set of methods and refuses everything else.
 
-Allowed: eth_*, net_*, web3_*, anvil_impersonateAccount, anvil_stopImpersonating, evm_mine,
-txpool_status, txpool_content.
+Allowed: eth_*, net_*, web3_*, anvil_impersonateAccount, anvil_stopImpersonating, evm_mine
+(only without parameters: with a timestamp it would move the chain's clock forward, which opens
+timelocks that are not open at the halt block), txpool_status, txpool_content.
 
 One thing is adjusted: gas is free on the fork (see setup/fork.sh), so the fee fields of the
-transactions sent with eth_sendTransaction / eth_sendUnsignedTransaction (gasPrice, maxFeePerGas,
-maxPriorityFeePerGas) are set to 0, whatever the client estimated. Otherwise a plain `cast send`
-from an impersonated account that holds no ETH would be refused for lack of funds, and move.sh
-would need anvil_setBalance, which is not allowed.
+transactions sent with eth_sendTransaction / eth_sendUnsignedTransaction and of the eth_estimateGas /
+eth_call requests (gasPrice, maxFeePerGas, maxPriorityFeePerGas) are set to 0, whatever the client
+estimated. Otherwise a `cast send` from an impersonated account that holds no ETH (an EOA, or a
+contract such as a multisig) would be refused for lack of funds (Anvil bounds the gas of a contract
+call by the sender's balance divided by the gas price), and move.sh would need anvil_setBalance,
+which is not allowed.
 
 Standard library only (it runs in the sandbox image next to bash/cast).
 Environment: UPSTREAM (the fork's JSON-RPC URL), LISTEN_PORT (default 8545).
@@ -56,6 +59,7 @@ def forward(request):
 
 
 FEE_FIELDS = ("gasPrice", "maxFeePerGas", "maxPriorityFeePerGas")
+FEE_METHODS = ("eth_sendTransaction", "eth_sendUnsignedTransaction", "eth_estimateGas", "eth_call")
 
 
 def zero_fees(request):
@@ -70,11 +74,14 @@ def handle_one(request):
     if not isinstance(request, dict):
         return error(None, "invalid request")
     method = request.get("method")
+    if method == "evm_mine" and request.get("params") not in (None, []):
+        print("denied: evm_mine with parameters", file=sys.stderr, flush=True)
+        return error(request.get("id"), "method not allowed in the sandbox: evm_mine with parameters (no timestamp or block count)")
     if not allowed(method):
         print("denied: %s" % method, file=sys.stderr, flush=True)
         return error(request.get("id"), "method not allowed in the sandbox: %s" % method)
     try:
-        if method in ("eth_sendTransaction", "eth_sendUnsignedTransaction"):
+        if method in FEE_METHODS:
             zero_fees(request)
         return forward(request)
     except Exception as exc:  # upstream down, timeout, bad JSON...

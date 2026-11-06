@@ -41,7 +41,9 @@ machine), the same one `prepare-submission.sh` uses.
 
 Passing the script is necessary, not sufficient: the manual inspection can still send a
 submission back, e.g. when the explanation of how the EOAs control an impersonated contract
-is missing or does not hold up.
+is missing or does not hold up. When `move.sh` impersonates a contract (a multisig, an owner
+contract), the script cannot prove who controls it: it ends with `MANUAL REVIEW REQUIRED` and exit
+code 3 instead of `VERIFIED` (0). Impersonating the locked contract itself is refused outright.
 
 ## Why every signature is mandatory
 
