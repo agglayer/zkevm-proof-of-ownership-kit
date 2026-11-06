@@ -49,7 +49,7 @@ zkevm-proof-of-ownership-kit/
 ├── recovery-tx/
 │   ├── impersonate-and-move.template.sh   # annotated template: impersonate the
 │   │                                        # relevant addresses and move funds to an EOA
-│   ├── run.sh                          # runs a case's move.sh against the fork
+│   ├── run.sh                          # runs a case's move.sh against the fork, in a sandbox container
 │   ├── validate-recovery.sh            # checks a case's recovery.json (offline, jq only)
 │   └── list-impersonated.sh            # derives impersonated addresses from tx receipts,
 │                                          # cross-checks them against a case's signatures.json
@@ -68,7 +68,13 @@ zkevm-proof-of-ownership-kit/
 │       ├── move.sh                     # your copy of the recovery-tx template, filled in
 │       └── signatures.json             # one {address, message, signature} entry per address
 ├── submission/
-│   ├── package.sh                      # runs a case on the fork, checks it and writes the .tgz
+│   ├── prepare-submission.sh           # THE script to run: checks your case on a fresh fork,
+│   │                                     # builds the .tgz and tells you where to send it
+│   ├── verify-submission.sh            # verifies a .tgz (what Polygon runs; you can too before sending)
+│   ├── helpers/                        # called by prepare-submission.sh, no need to run them
+│   │   ├── generate.sh                 # runs a case on the fork and checks move.sh, recovery.json
+│   │   │                                 # and signatures.json fit together (writes manifest.json, run.log)
+│   │   └── package.sh                  # packs generate.sh's output into the .tgz
 │   └── SUBMIT.md                       # checklist of what to submit back to Polygon
 └── test/e2e/                           # end-to-end test (geth + fork + a case), run in CI
 ```
@@ -125,9 +131,12 @@ available and tells you what is missing; it only warns if `cast` is not installe
    its README — it walks you through declaring what you recover in `recovery.json`,
    filling in `move.sh`, running it against the fork, and collecting signatures into
    `signatures.json` for every impersonated address plus your destination EOA.
-3. **Package and submit.** On a fresh fork, run `submission/package.sh cases/<your-case-id>`:
-   it runs your `move.sh`, checks the result against `recovery.json`, asks you to sign
-   whatever is missing and writes a single `.tgz`. Email that file to
+3. **Package and submit.** Run `submission/prepare-submission.sh cases/<your-case-id>` (it starts a fresh fork and stops it afterwards; `--no-fork` uses one you already have running):
+   it runs your `move.sh`, checks the result against `recovery.json` and that
+   `signatures.json` (filled in beforehand) holds a valid signature for every impersonated
+   EOA plus the destination — if one is missing it stops and prints the command to sign
+   it — and writes a single `.tgz`, telling you at the end where to send it and how to
+   verify it. Email that file to
    [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology) for review
    (see [`submission/SUBMIT.md`](submission/SUBMIT.md)).
 

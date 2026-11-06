@@ -183,7 +183,7 @@ export RPC_URL ETH_RPC_URL="${RPC_URL}"
 grep -q "WARNING: FORK_BLOCK=${STABLE_BLOCK}" "${FORK_LOG}" || fail "fork.log lacks the FORK_BLOCK warning"
 [ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "${vault_wei}" ] || fail "vault balance differs on the fork"
 dest_before="$(balance_wei "${DEST}" "${RPC_URL}")"
-# Snapshot of the pristine fork: step 8 reverts to it to run package.sh on a fresh fork.
+# Snapshot of the pristine fork: step 8 reverts to it to run prepare-submission.sh on a fresh fork.
 SNAP_ID="$(cast rpc evm_snapshot --rpc-url "${RPC_URL}" | tr -d '"')"
 echo "  fork up, vault funded on the fork"
 
@@ -253,8 +253,8 @@ jq '.[0].signature = (.[0].signature[0:-4] + "0000")' "${SIGS}" >"${WORKDIR}/for
 expect_fail "verify-signature rejects a forged signature" \
     "${repo_root}/ownership-proof/verify-signature.sh" "${WORKDIR}/forged.json"
 
-# ---------------------------------------------------------------- 8. package.sh
-step "8. submission/package.sh on a fresh fork"
+# ---------------------------------------------------------------- 8. prepare-submission.sh
+step "8. submission/prepare-submission.sh on a fresh fork"
 # Back to the pristine fork (the withdraw of step 5 is undone). A snapshot is consumed by
 # the revert, so a new one is taken each time.
 fresh_fork() {
@@ -270,25 +270,25 @@ write_recovery() { # <path> <amount>
 }
 write_recovery "${CASE_DIR}/recovery.json" "${vault_wei}"
 OUT_DIR="${WORKDIR}/out"
-pkg() { # <case dir> [extra args] — non-interactive (no TTY), against the fork.log of this run
+pkg() { # <case dir> [extra args] — non-interactive (no TTY), on the fork already running (--no-fork)
     local dir="$1"
     shift
-    RPC_URL="${RPC_URL}" FORK_LOG="${FORK_LOG}" "${repo_root}/submission/package.sh" "${dir}" "$@" </dev/null
+    RPC_URL="${RPC_URL}" FORK_LOG="${FORK_LOG}" "${repo_root}/submission/prepare-submission.sh" "${dir}" --no-fork "$@" </dev/null
 }
 
 # Negative: a fork that is not at the halt block is refused unless --allow-test-fork.
-expect_fail "package.sh refuses a test fork without --allow-test-fork" pkg "${CASE_DIR}" --output-dir "${OUT_DIR}"
+expect_fail "prepare-submission.sh refuses a test fork without --allow-test-fork" pkg "${CASE_DIR}" --output-dir "${OUT_DIR}"
 grep -q "not at the halt block" "${WORKDIR}/neg.out" || fail "expected the halt-block message"
 
 # Negative: declaring more than the vault holds is caught before anything runs.
 write_recovery "${CASE_DIR}/recovery.json" "$((vault_wei))0"
-expect_fail "package.sh rejects a recovery.json declaring more than the vault holds" \
+expect_fail "prepare-submission.sh rejects a recovery.json declaring more than the vault holds" \
     pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -q "less than the" "${WORKDIR}/neg.out" || fail "expected the 'less than declared' message"
 
 # Negative: declaring less than what move.sh moves -> the simulation does not match.
 write_recovery "${CASE_DIR}/recovery.json" "$((vault_wei - 1))"
-expect_fail "package.sh rejects a move that differs from recovery.json" \
+expect_fail "prepare-submission.sh rejects a move that differs from recovery.json" \
     pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -q "does not match recovery.json" "${WORKDIR}/neg.out" || fail "expected the mismatch message"
 fresh_fork
@@ -298,7 +298,7 @@ CASE_UNSIGNED="${WORKDIR}/case-unsigned"
 cp -r "${CASE_DIR}" "${CASE_UNSIGNED}"
 write_recovery "${CASE_UNSIGNED}/recovery.json" "${vault_wei}"
 jq --arg owner "${OWNER}" '[.[] | select((.address | ascii_downcase) != ($owner | ascii_downcase))]' "${SIGS}" >"${CASE_UNSIGNED}/signatures.json"
-expect_fail "package.sh fails when the owner has not signed" pkg "${CASE_UNSIGNED}" --allow-test-fork --output-dir "${OUT_DIR}"
+expect_fail "prepare-submission.sh fails when the owner has not signed" pkg "${CASE_UNSIGNED}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -qi "ADDRESS=${OWNER} NONCE=${NONCE}" "${WORKDIR}/neg.out" || fail "expected the sign-message command for the owner"
 fresh_fork
 
@@ -312,7 +312,7 @@ PKG_DIR="${WORKDIR}/unpacked/case"
 for f in manifest.json recovery.json move.sh signatures.json fork.log run.log; do
     [ -f "${PKG_DIR}/${f}" ] || fail "package lacks ${f}"
 done
-[ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "0" ] || fail "vault not empty after package.sh"
+[ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "0" ] || fail "vault not empty after prepare-submission.sh"
 jq -e --arg nonce "${NONCE}" --arg dest "${DEST}" --arg locked "${VAULT}" --arg amount "${vault_wei}" '
     .test_fork == true and .nonce == $nonce and (.tx_hashes | length) == 1
     and (.required_signers | length) == 2 and .contract_senders == []
@@ -328,11 +328,11 @@ done
 echo "  package ok: $(basename "${PKG}")"
 
 # Negative: running it again on the same (now used) fork is refused.
-expect_fail "package.sh refuses a fork already used by an earlier run" pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}"
+expect_fail "prepare-submission.sh refuses a fork already used by an earlier run" pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -q "less than the" "${WORKDIR}/neg.out" || fail "expected the 'fork already used' message"
 
 # Positive: the destination is also the sender (the owner withdraws to itself) and pays gas,
-# so its balance gains less than the amount; package.sh adds the gas back and still passes.
+# so its balance gains less than the amount; prepare-submission.sh adds the gas back and still passes.
 fresh_fork
 CASE_SELF="${WORKDIR}/case-self"
 cp -r "${CASE_DIR}" "${CASE_SELF}"
@@ -346,7 +346,40 @@ jq -e '(.required_signers | length) == 1 and (.balances[0].destination_gas_paid 
     "${WORKDIR}/unpacked/case-self/manifest.json" >/dev/null || fail "unexpected manifest for the self-withdraw case"
 echo "  package ok with destination == sender (gas paid added back)"
 
-# --- Extension point (issue #5): when the verifier exists, add its step here, feeding it
-# ${PKG}.
+# ---------------------------------------------------------------- 9. verify-submission.sh
+step "9. submission/verify-submission.sh on the package"
+fresh_fork
+verify() { # <tgz> [extra args] — on the fork already running, FORK_LOG of this run
+    local f="$1"
+    shift
+    RPC_URL="${RPC_URL}" FORK_LOG="${FORK_LOG}" "${repo_root}/submission/verify-submission.sh" "${f}" --no-fork "$@" </dev/null
+}
+expect_fail "verify-submission refuses a test package without --allow-test-fork" verify "${PKG}"
+grep -q "TEST fork" "${WORKDIR}/neg.out" || fail "expected the test-fork message"
+fresh_fork
+verify "${PKG}" --allow-test-fork >"${WORKDIR}/verify.out" || { cat "${WORKDIR}/verify.out" >&2; fail "verification of a good package failed"; }
+grep -q "^VERIFIED:" "${WORKDIR}/verify.out" || fail "expected VERIFIED"
+echo "  verified: $(basename "${PKG}")"
+
+# Negative: a file changed after packaging (hash mismatch), a manifest that lies about the
+# nonce (hashes fine), and a path-traversal entry.
+TAMPER="${WORKDIR}/tamper"
+mkdir -p "${TAMPER}/a" "${TAMPER}/b" "${TAMPER}/c"
+tar -xzf "${PKG}" -C "${TAMPER}/a"
+sed -i.bak "s/${vault_wei}/1${vault_wei}/" "${TAMPER}/a/case/recovery.json"
+rm -f "${TAMPER}/a/case/recovery.json.bak"
+tar -czf "${TAMPER}/hash.tgz" -C "${TAMPER}/a" case
+expect_fail "verify-submission rejects a file that differs from the manifest" verify "${TAMPER}/hash.tgz" --allow-test-fork
+grep -q "do not match manifest.json" "${WORKDIR}/neg.out" || fail "expected the hash mismatch message"
+tar -xzf "${PKG}" -C "${TAMPER}/b"
+jq '.nonce = "999"' "${TAMPER}/b/case/manifest.json" >"${TAMPER}/m.json" && mv "${TAMPER}/m.json" "${TAMPER}/b/case/manifest.json"
+tar -czf "${TAMPER}/nonce.tgz" -C "${TAMPER}/b" case
+fresh_fork
+expect_fail "verify-submission rejects a manifest that differs from a fresh run" verify "${TAMPER}/nonce.tgz" --allow-test-fork
+grep -q "does not match what the case does" "${WORKDIR}/neg.out" || fail "expected the manifest mismatch message"
+echo x >"${TAMPER}/c/f"
+tar -czf "${TAMPER}/evil.tgz" -C "${TAMPER}/c" --transform 's#^f#case/../evil#' f
+expect_fail "verify-submission rejects a path-traversal entry" verify "${TAMPER}/evil.tgz" --allow-test-fork
+grep -q "unsafe path" "${WORKDIR}/neg.out" || fail "expected the unsafe path message"
 
 step "E2E PASSED"

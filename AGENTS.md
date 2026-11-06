@@ -75,7 +75,7 @@ plain and step-by-step.
   the optional overrides (`L2_RPC_URL`, `ANVIL_PORT`, `BLOCK_TIME`, `ANVIL_IMAGE`, `FORK_LOG`, test-only `FORK_BLOCK`). `fork.sh`
   also saves its full output (masking the RPC URL) to `setup/fork.log`.
 - `recovery-tx/` — `impersonate-and-move.template.sh` (annotated template), `run.sh` (runs a
-  case's `move.sh` against the fork), `validate-recovery.sh` (offline check of a case's
+  case's `move.sh` against the fork, inside a sandbox container), `validate-recovery.sh` (offline check of a case's
   `recovery.json`), `list-impersonated.sh` (derives senders from receipts and
   verifies a case's `signatures.json`).
 - `ownership-proof/` — `message-template.txt` (the fixed proof message), `sign-message.sh`
@@ -87,14 +87,26 @@ plain and step-by-step.
   `recovery.json`, `move.sh`, `signatures.json`). `recovery.json` is the explicit claim — locked
   contract, funds (token + amount in base units, as a string) and destination wallet; its schema
   lives in `recovery-tx/validate-recovery.sh`.
-- `submission/` — `package.sh` runs a case against the fork and builds the `.tgz` to submit:
+- `submission/` — `prepare-submission.sh` is the one script stakeholders run: it pre-checks the case
+  (files present, `move.sh` without template placeholders, `recovery.json` valid), runs
+  `helpers/generate.sh`, packs its output with `helpers/package.sh` and prints where to send the
+  `.tgz` and how to verify it. `helpers/generate.sh` runs a case against the fork and checks it:
   validates `recovery.json`, checks `fork.log`, runs `move.sh`, compares the balances of the locked
   contract and the destination with the declared funds (amounts through `bc`: they are 256-bit),
-  derives the senders from the mined blocks, requires a valid signature for every EOA sender plus
-  the destination (prompting when run from a terminal) and writes `manifest.json` with the sha256 of
-  each file. `SUBMIT.md` is the checklist of what the stakeholder sends back to Polygon.
+  derives the senders from the mined blocks, requires a valid signature in the (pre-filled)
+  `signatures.json` for every EOA sender plus the destination — it never signs, it prints the
+  `sign-message.sh` commands for the missing ones — and writes the files plus `manifest.json` (sha256
+  of each file) to an output dir. It starts a fresh fork with `setup/fork.sh` and stops it on exit
+  (`--no-fork` to use an already-running one, e.g. in the e2e). It is also what a verifier runs to check that `move.sh`,
+  `recovery.json` and `signatures.json` fit together. `helpers/package.sh` only packs that output
+  into `<case-id>-<timestamp>.tgz`. `verify-submission.sh <tgz>` is the Polygon-side check (also runnable
+  by the stakeholder): it unpacks the `.tgz` safely (untrusted: one `<case-id>/` folder, regular files,
+  no `..`), checks the manifest sha256s, re-runs the case on a fresh fork through `helpers/generate.sh`
+  (recovery.json, impersonated senders, signatures) and compares locked contract, destination, nonce,
+  fork block, senders and amounts with `manifest.json` (not tx hashes/gas). The packaged `move.sh`
+  runs in the sandbox (see the invariants). `SUBMIT.md` is the checklist of what the stakeholder sends back to Polygon.
 - `test/e2e/` — end-to-end test (geth `--dev` in Docker + `setup/fork.sh` + a whole case through
-  `package.sh`), run by `.github/workflows/e2e.yml`.
+  `prepare-submission.sh`), run by `.github/workflows/e2e.yml`.
 
 Fork-state verification lives inside `setup/fork.sh` (it refuses to start unless the RPC's
 latest block is the halt block); there is no separate verifier for it.
@@ -128,9 +140,12 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 ./recovery-tx/list-impersonated.sh --signatures cases/<case-id>/signatures.json <tx-hash> ...
 #    (signatures only, no fork needed: ./ownership-proof/verify-signature.sh cases/<case-id>/signatures.json)
 
-# 5. Package (on a fresh fork: restart fork.sh if you ran move.sh by hand). It repeats steps 2-4
-#    itself, asks for the missing signatures and writes the .tgz to submit; see submission/SUBMIT.md
-./submission/package.sh cases/<case-id>
+# 5. Package. It starts (and afterwards stops) its own fresh fork — stop the one from step 1 first,
+#    or pass --no-fork to use a fresh one you manage. It repeats steps 2-4
+#    itself, fails listing the signatures missing from signatures.json and writes the .tgz to
+#    submit, then says where to send it; see submission/SUBMIT.md.
+#    Only check (no .tgz): ./submission/helpers/generate.sh cases/<case-id>
+./submission/prepare-submission.sh cases/<case-id>
 ```
 
 ## Invariants (do not break)
@@ -138,6 +153,13 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 - **No raw private keys, ever.** `sign-message.sh` delegates to `cast wallet sign` with a signer
   flag and rejects `--private-key*` / `--mnemonic*`. Never add a code path, env var, or doc
   example that puts key material on a command line or in a file.
+- **`move.sh` only ever runs in the sandbox.** It is a script written by the submitter and runs
+  both when generating a package and when Polygon verifies one, so `recovery-tx/run.sh` runs it in a
+  Docker container on a `--internal` network (only the fork's container is attached, as `anvil`), with
+  a read-only rootfs, no capabilities, `no-new-privileges`, limits on memory/CPU/pids/time, and only
+  `move.sh` mounted (read-only). Don't add a host-execution path, mount case files or keys into it,
+  or pass the environment through. Consequence: `move.sh` must be self-contained and use `${RPC_URL}`. The sandbox image is built from
+  `recovery-tx/sandbox/Dockerfile` (Foundry + `jq` + `curl`); keep it minimal.
 - **Contracts can't sign.** Ownership of an impersonated contract is proven by signatures from
   the EOA(s) that control it on-chain. `list-impersonated.sh` lists contract senders (non-empty
   `cast code`) separately instead of requiring a signature for them.
@@ -216,6 +238,6 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 |                   `fork.sh` behavior or output                  |                                    `README.md` (Running the shadow-fork), `submission/SUBMIT.md` fork-logs item                                   |
 |          `recovery-tx/impersonate-and-move.template.sh`         |                                                   `cases/_template/move.sh` (keep them in sync)                                                   |
 |            `recovery.json` fields (`validate-recovery.sh`)         | `cases/_template/recovery.json` and README step 2, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                                       |
-|                  `submission/package.sh` checks or output        | `submission/SUBMIT.md` ("in the package" marks), `cases/_template/README.md` step 5, `test/e2e/run.sh` step 8, `AGENTS.md` |
+|           `submission/prepare-submission.sh` / `verify-submission.sh` / `helpers/*` checks or output | `submission/SUBMIT.md` ("in the package" marks), `cases/_template/README.md` step 5, `test/e2e/run.sh` steps 8-9, `AGENTS.md` |
 |                 Files added/removed/implemented                 |                                                `README.md` layout, `AGENTS.md` Repository Structure                                               |
-|                     What stakeholders submit                    |                      `submission/SUBMIT.md`, `cases/_template/README.md` step 5, `submission/package.sh` (package layout, manifest)                     |
+|                     What stakeholders submit                    |                      `submission/SUBMIT.md`, `cases/_template/README.md` step 5, `submission/helpers/` (package layout, manifest)                     |

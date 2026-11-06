@@ -56,6 +56,13 @@ Then, from the repo root:
 ./recovery-tx/run.sh cases/<your-case-id>/move.sh
 ```
 
+`move.sh` runs inside a sandbox container (Docker, the Foundry image plus `jq` and `curl`; built the
+first time you run it, which needs internet once): it only sees the fork (at `$RPC_URL`, which the
+sandbox sets itself), has no internet and no access to your machine. So it must be
+**self-contained** — it is the only case file the sandbox gets — and use `"${RPC_URL}"` as in the
+template; it can use `bash`, `cast`/`forge`, `jq`, `curl` and the basic Linux utilities. The same
+sandbox is used when Polygon verifies your submission.
+
 Note the transaction hash it prints — you'll need it for submission.
 
 ## 3. Sign the ownership-proof message
@@ -118,20 +125,23 @@ is still on you to remember.
 
 ## 5. Package and submit
 
-`submission/package.sh` does steps 2 to 4 for you and packages the result. Start from a
-**fresh fork** — `move.sh` already moved the funds on the fork if you ran it by hand, so
-stop `setup/fork.sh` and start it again — and run, from the repo root:
+`submission/prepare-submission.sh` does steps 2 to 4 for you, guides you through what is missing and packages the result. It starts a
+**fresh fork** itself (with `setup/fork.sh`, using the same `L2_RPC_URL`... settings; `source setup/.env`
+first if you use one) and stops it when it ends, so stop any fork you have running on the
+same port before. Run, from the repo root:
 
 ```bash
-./submission/package.sh cases/<your-case-id>
+./submission/prepare-submission.sh cases/<your-case-id>
 ```
 
 It validates `recovery.json`, runs `move.sh`, checks that the funds declared in
 `recovery.json` really moved from the locked contract to your destination, works out
-which EOAs were impersonated, asks you to sign any that are missing (reusing the
-signatures already in `signatures.json`, with the same nonce) and writes
-`cases/<your-case-id>/<your-case-id>-<timestamp>.tgz`. If you cannot sign from the
-terminal, it stops and prints the exact commands; sign, restart the fork and run it again.
+which EOAs were impersonated, checks that `signatures.json` (filled in beforehand, step 3) has a valid signature for each of them and for the
+destination, writes `cases/<your-case-id>/<your-case-id>-<timestamp>.tgz` and tells you
+where to send it and how to verify it. It never
+signs: if a signature is missing it stops and prints the exact command to make it; sign,
+run it again. If you prefer to manage the fork yourself, start a fresh one with `setup/fork.sh`
+(restart it if `move.sh` already ran on it) and add `--no-fork`. (The scripts in `submission/helpers/` are the steps it runs; you don't need to call them.)
 
 Then follow [`../../submission/SUBMIT.md`](../../submission/SUBMIT.md) and email the
 `.tgz` to [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology).
