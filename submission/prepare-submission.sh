@@ -6,7 +6,8 @@
 #   recovery.json    the funds, the locked contract and the destination wallet
 #   move.sh          the simulated recovery, filled in
 #   signatures.json  one signature per EOA that move.sh impersonates, plus the destination
-#                    (ownership-proof/sign-message.sh, same nonce for all) — if some are
+#                    (ownership-proof/sign-message.sh, same nonce for all, made once recovery.json
+#                    and move.sh are final: the signed message carries their hash) — if some are
 #                    missing, this script tells you which ones and how to sign them
 #
 # What it does:

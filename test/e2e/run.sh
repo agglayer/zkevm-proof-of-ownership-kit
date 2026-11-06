@@ -199,6 +199,12 @@ cast send --unlocked --from "${OWNER}" "${VAULT}" "withdraw(address,uint256)" "$
     --json --rpc-url "\${RPC_URL}"
 MOVE
 chmod +x "${CASE_DIR}/move.sh"
+# The signatures (step 6) are bound to recovery.json and move.sh, so both are final from here on.
+write_recovery() { # <path> <amount>
+    jq -n --arg locked "${VAULT}" --arg dest "${DEST}" --arg amount "$2" \
+        '{locked_contract: $locked, destination: $dest, funds: [{token: "native", amount: $amount}]}' >"$1"
+}
+write_recovery "${CASE_DIR}/recovery.json" "${vault_wei}"
 
 # Negative: a non-owner cannot withdraw (revert), and nothing moves.
 expect_fail "non-owner withdraw reverts" \
@@ -223,6 +229,7 @@ mkdir -p "${KS_DIR}"
 # Public anvil test keys only (never real keys).
 cast wallet import owner --private-key "${OWNER_TEST_KEY}" --unsafe-password pw --keystore-dir "${KS_DIR}" >/dev/null
 cast wallet import dest --private-key "${DEST_TEST_KEY}" --unsafe-password pw --keystore-dir "${KS_DIR}" >/dev/null
+cast wallet import attacker --private-key "${ATTACKER_TEST_KEY}" --unsafe-password pw --keystore-dir "${KS_DIR}" >/dev/null
 SIGS="${CASE_DIR}/signatures.json"
 
 # Negative: only the destination signed -> the owner (a sender) is missing.
@@ -249,7 +256,38 @@ grep -qi "${OWNER}" "${WORKDIR}/list.out" || fail "owner not listed as impersona
 # Negative: a tampered signature must not verify.
 jq '.[0].signature = (.[0].signature[0:-4] + "0000")' "${SIGS}" >"${WORKDIR}/forged.json"
 expect_fail "verify-signature rejects a forged signature" \
-    "${repo_root}/ownership-proof/verify-signature.sh" "${WORKDIR}/forged.json"
+    "${repo_root}/ownership-proof/verify-signature.sh" "${WORKDIR}/forged.json" "${CASE_DIR}"
+
+# The signed message carries the locked contract, the destination and a hash of recovery.json +
+# move.sh: signatures do not survive a change of either file, nor reuse in another case.
+grep -q "case hash: $("${repo_root}/ownership-proof/case-hash.sh" "${CASE_DIR}")" "${WORKDIR}/forged.json" \
+    || fail "the signed message lacks the case hash"
+grep -q "locked contract: $(cast to-check-sum-address "${VAULT}") — destination: $(cast to-check-sum-address "${DEST}")" "${WORKDIR}/forged.json" \
+    || fail "the signed message lacks the locked contract / destination"
+CASE_CHANGED="${WORKDIR}/case-changed"
+cp -r "${CASE_DIR}" "${CASE_CHANGED}"
+echo "# changed after signing" >>"${CASE_CHANGED}/move.sh"
+expect_fail "verify-signature rejects signatures after move.sh changed" \
+    "${repo_root}/ownership-proof/verify-signature.sh" "${CASE_CHANGED}/signatures.json"
+grep -q "case hash" "${WORKDIR}/neg.out" || fail "expected the case hash message"
+
+# The attack: reuse the owner's signature in a case of one's own (other destination). Signing a
+# new entry next to it is refused; a hand-assembled file does not verify.
+CASE_REPLAY="${WORKDIR}/case-replay"
+cp -r "${CASE_DIR}" "${CASE_REPLAY}"
+jq --arg a "${ATTACKER}" '.destination = $a' "${CASE_DIR}/recovery.json" >"${CASE_REPLAY}/recovery.json"
+sed "s/\"withdraw(address,uint256)\" \"${DEST}\"/\"withdraw(address,uint256)\" \"${ATTACKER}\"/" "${CASE_DIR}/move.sh" >"${CASE_REPLAY}/move.sh"
+grep -q "\"${ATTACKER}\" \"${vault_wei}\"" "${CASE_REPLAY}/move.sh" || fail "could not build the replay move.sh"
+expect_fail "sign-message refuses to add a signature next to ones made for other files" \
+    env ADDRESS="${ATTACKER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${CASE_REPLAY}/signatures.json" \
+    --keystore "${KS_DIR}/attacker" --password pw
+grep -q "different version" "${WORKDIR}/neg.out" || fail "expected the different-version message"
+attacker_entry="$(CASE_DIR="${CASE_REPLAY}" ADDRESS="${ATTACKER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" - \
+    --keystore "${KS_DIR}/attacker" --password pw)"
+jq --argjson a "${attacker_entry}" '[.[] | select((.address | ascii_downcase) == ("'"${OWNER}"'" | ascii_downcase))] + [$a]' "${SIGS}" >"${CASE_REPLAY}/signatures.json"
+expect_fail "verify-signature rejects the owner's signature reused in another case" \
+    "${repo_root}/ownership-proof/verify-signature.sh" "${CASE_REPLAY}/signatures.json"
+grep -q "case hash" "${WORKDIR}/neg.out" || fail "expected the case hash message for the reused signature"
 
 # ---------------------------------------------------------------- 8. prepare-submission.sh
 step "8. submission/prepare-submission.sh (it starts its own fork each time)"
@@ -260,10 +298,6 @@ docker rm -f "${ANVIL_NAME}" >/dev/null 2>&1 || true
 wait "${fork_pid}" 2>/dev/null || true
 fork_pid=""
 
-write_recovery() { # <path> <amount>
-    jq -n --arg locked "${VAULT}" --arg dest "${DEST}" --arg amount "$2" \
-        '{locked_contract: $locked, destination: $dest, funds: [{token: "native", amount: $amount}]}' >"$1"
-}
 write_recovery "${CASE_DIR}/recovery.json" "${vault_wei}"
 OUT_DIR="${WORKDIR}/out"
 # The scripts start the fork themselves with setup/fork.sh: tell it to fork the geth chain.
@@ -300,6 +334,15 @@ write_recovery "${CASE_UNSIGNED}/recovery.json" "${vault_wei}"
 jq --arg owner "${OWNER}" '[.[] | select((.address | ascii_downcase) != ($owner | ascii_downcase))]' "${SIGS}" >"${CASE_UNSIGNED}/signatures.json"
 expect_fail "prepare-submission.sh fails when the owner has not signed" pkg "${CASE_UNSIGNED}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -qi "ADDRESS=${OWNER} NONCE=${NONCE}" "${WORKDIR}/neg.out" || fail "expected the sign-message command for the owner"
+
+# Negative: a file changed after signing -> the signatures no longer verify.
+CASE_EDITED="${WORKDIR}/case-edited"
+cp -r "${CASE_DIR}" "${CASE_EDITED}"
+write_recovery "${CASE_EDITED}/recovery.json" "${vault_wei}"
+echo "# edited after signing" >>"${CASE_EDITED}/move.sh"
+expect_fail "prepare-submission.sh fails when move.sh changed after signing" \
+    pkg "${CASE_EDITED}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "case hash" "${WORKDIR}/neg.out" || fail "expected the case hash message"
 
 # Negative: a tx from an unsigned sender still pending when move.sh exits (--async) must be
 # collected (the pool is flushed before the scan), so its sender is required to sign.
@@ -370,6 +413,9 @@ sed "s/\"withdraw(address,uint256)\" \"${DEST}\"/\"withdraw(address,uint256)\" \
 grep -q "\"${OWNER}\" \"${vault_wei}\"" "${CASE_SELF}/move.sh" || fail "could not build the self-withdraw move.sh"
 jq -n --arg locked "${VAULT}" --arg dest "${OWNER}" --arg amount "${vault_wei}" \
     '{locked_contract: $locked, destination: $dest, funds: [{token: "native", amount: $amount}]}' >"${CASE_SELF}/recovery.json"
+echo '[]' >"${CASE_SELF}/signatures.json"
+ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${CASE_SELF}/signatures.json" \
+    --keystore "${KS_DIR}/owner" --password pw >/dev/null
 pkg "${CASE_SELF}" --allow-test-fork --output-dir "${WORKDIR}/out-self" >"${WORKDIR}/package-self.out"
 tar -xzf "${WORKDIR}"/out-self/case-self-*.tgz -C "${WORKDIR}/unpacked"
 jq -e '(.required_signers | length) == 1 and (.balances[0].destination_gas_paid | tonumber) == 0' \

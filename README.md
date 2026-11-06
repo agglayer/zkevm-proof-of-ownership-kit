@@ -56,6 +56,7 @@ zkevm-proof-of-ownership-kit/
 │                                          # cross-checks them against a case's signatures.json
 ├── ownership-proof/
 │   ├── message-template.txt            # fixed message format, for consistent signatures
+│   ├── case-hash.sh                    # hash of recovery.json + move.sh that goes into the message
 │   ├── sign-message.sh                 # signs the message via ledger/keystore/prompt for
 │   │                                     # one address and appends it to a signatures.json
 │   └── verify-signature.sh             # verifies every entry of a signatures.json (run by
@@ -98,14 +99,39 @@ Ownership is proven with a **plain fixed message**, signed via standard `persona
 (EIP-191), one signature per address:
 
 ```text
-I confirm ownership of <address> for zkEVM fund recovery — nonce: <nonce> — date: <date>
+I confirm ownership of <address> for zkEVM fund recovery — locked contract: <locked_contract> — destination: <destination> — case hash: <case_hash> — nonce: <nonce> — date: <date>
 ```
+
+The message is **bound to your case**: it names the locked contract and the destination (from your
+`recovery.json`) and carries a *case hash* of `recovery.json` and `move.sh`. So a signature only counts
+for those exact files, and it cannot be reused in another case (for instance with a different
+destination). See [What a signature is bound to](#what-a-signature-is-bound-to).
 
 Use `ownership-proof/sign-message.sh` to produce each signature — do not sign an ad-hoc
 message on your own, as it will not match what Polygon's verification step expects. It
 signs through `cast` with a hardware wallet (`--ledger` / `--trezor`), a Foundry keystore
 (`--account`), or a hidden key prompt (`--interactive`); raw private keys on the command
 line are refused.
+
+### What a signature is bound to
+
+- **`<locked_contract>` and `<destination>`**: read from your `recovery.json`. **Check them in the
+  message before signing**: they say where the funds go.
+- **`<case_hash>`**: `sha256` of these two lines, the `sha256` of each file's exact bytes and its name:
+
+  ```text
+  <sha256 of recovery.json>  recovery.json
+  <sha256 of move.sh>  move.sh
+  ```
+
+  `ownership-proof/case-hash.sh cases/<id>` prints it (by hand: `cd cases/<id> && sha256sum recovery.json
+  move.sh | sha256sum`).
+
+**Any change to `recovery.json` or `move.sh` — even a space — invalidates every signature**, and
+`sign-message.sh`, `prepare-submission.sh` and the verifier say so. So: finish both files, **read `move.sh`
+(by signing you approve that script)**, and only then collect the signatures; if you change a file
+afterwards, empty `signatures.json` (`echo '[]' > cases/<id>/signatures.json`) and sign again with every
+address. Each signer should check the destination in the message before signing.
 
 ### Choosing the NONCE
 
@@ -125,7 +151,7 @@ missing signatures; use that one. Once the file has a signature, its nonce is th
 The date in the message is the day you sign (UTC); signatures made on different days are fine.
 
 No terminal, or a cold wallet only usable from the browser? Print the exact message with
-`sign-message.sh --print-message` and sign it at
+`CASE_DIR=cases/<your-case-id> ADDRESS=0x... NONCE=<nonce> ownership-proof/sign-message.sh --print-message` and sign it at
 [etherscan.io/verifiedSignatures](https://etherscan.io/verifiedSignatures) instead — see
 [`cases/_template/README.md`](cases/_template/README.md).
 
@@ -170,9 +196,10 @@ the last step does it.
    It runs in a sandbox that only reaches the fork, so it must be self-contained and use
    `"${RPC_URL}"`.
 
-4. **Fill in `signatures.json`.** One signature for **every address `move.sh` impersonates that
-   is an EOA, plus your destination wallet** (see [Who needs a signature](#who-needs-a-signature)),
-   all with the same nonce:
+4. **Fill in `signatures.json`.** Once `recovery.json` and `move.sh` are **final** (the signed message
+   carries a hash of both; if either changes, sign again), one signature for **every address `move.sh`
+   impersonates that is an EOA, plus your destination wallet** (see
+   [Who needs a signature](#who-needs-a-signature)), all with the same nonce:
 
    ```bash
    ADDRESS=0x... NONCE=<one-nonce-for-the-whole-case> \

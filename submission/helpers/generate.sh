@@ -8,7 +8,8 @@
 # Inputs, both filled in beforehand in cases/<case-id>/:
 #   recovery.json    the funds, the locked contract and the destination wallet
 #   signatures.json  one signature per EOA that move.sh impersonates plus the destination
-#                    (made with ownership-proof/sign-message.sh, one shared nonce)
+#                    (made with ownership-proof/sign-message.sh, one shared nonce, AFTER
+#                    recovery.json and move.sh were final: the signed message carries their hash)
 #
 # What it does, in order (it stops at the first problem, with what to do next):
 #   1. validates cases/<case-id>/recovery.json (recovery-tx/validate-recovery.sh);
@@ -406,7 +407,7 @@ if [ -n "${missing}" ]; then
     exit 1
 fi
 
-"${repo_root}/ownership-proof/verify-signature.sh" "${signatures_path}" || die "signatures.json has invalid entries — see above."
+"${repo_root}/ownership-proof/verify-signature.sh" "${signatures_path}" || die "signatures.json has invalid entries — see above. If recovery.json or move.sh changed after signing, every signature must be made again (they are bound to those exact files)."
 
 # --- 6. Write the files --------------------------------------------------------------------------
 

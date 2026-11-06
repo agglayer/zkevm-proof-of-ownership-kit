@@ -65,6 +65,12 @@ If you ran it, note the transaction hash it prints — you can use it in step 3.
 
 ## 2. Sign the ownership-proof message
 
+**Sign last:** the signed message carries the locked contract, the destination and a hash of your
+`recovery.json` and `move.sh`, so a signature only counts for those exact files. If you change either
+file afterwards — even a space — every signature is invalid and you must sign again (empty
+`signatures.json` with `echo '[]' > cases/<your-case-id>/signatures.json`, then every address). Read
+`move.sh` before signing: by signing you approve that script, and check the destination in the message.
+
 For every EOA impersonated in `move.sh`, **and** for your destination EOA, sign the
 proof message. Contracts impersonated in `move.sh` have no private key — sign instead
 with the EOA(s) that control them on-chain (owner, multisig signers, admin).
@@ -94,7 +100,7 @@ exact message, then sign it at [etherscan.io/verifiedSignatures](https://ethersc
 with the wallet that owns the address:
 
 ```bash
-ADDRESS=0x... NONCE=<same-nonce> ./ownership-proof/sign-message.sh --print-message
+CASE_DIR=cases/<your-case-id> ADDRESS=0x... NONCE=<same-nonce> ./ownership-proof/sign-message.sh --print-message
 ```
 
 Paste the message verbatim (don't retype it), publish the signature, and add an entry
@@ -107,7 +113,7 @@ Keep the Etherscan link for your submission.
 [
   {
     "address": "0x...",
-    "message": "I confirm ownership of 0x... for zkEVM fund recovery — nonce: ... — date: ...",
+    "message": "I confirm ownership of 0x... for zkEVM fund recovery — locked contract: 0x... — destination: 0x... — case hash: ... — nonce: ... — date: ...",
     "signature": "0x..."
   }
 ]

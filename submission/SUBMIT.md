@@ -19,7 +19,7 @@ Laid out as `<case-id>/`:
 | --- | --- |
 | `recovery.json` | What you recover: the locked contract, the funds (token and amount) and the destination wallet. |
 | `move.sh` | The simulated recovery that Polygon re-runs on its own fork. |
-| `signatures.json` | One signature per EOA impersonated in `move.sh` plus the destination, each over the fixed proof message (which includes the nonce and date). |
+| `signatures.json` | One signature per EOA impersonated in `move.sh` plus the destination, each over the fixed proof message, which includes the locked contract, the destination, a hash of `recovery.json` and `move.sh`, the nonce and the date: a signature only counts for those exact files. |
 | `manifest.json` | What the run found: tx hashes, impersonated addresses, nonce, balances before and after, whether it was a test fork, and the sha256 of every file. |
 | `fork.log` | Full output of `setup/fork.sh`, with the halt block and its confirmation line. Informational: the verifier checks its own fork, not this file. |
 | `run.log` | Output of `move.sh` on the fork. Informational, like `fork.log` (only its hash is checked). |
