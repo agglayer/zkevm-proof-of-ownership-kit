@@ -1,15 +1,54 @@
 #!/bin/bash
 # Runs a case's move.sh (copied and filled in from impersonate-and-move.template.sh)
-# against the local shadow-fork started by setup/fork.sh.
+# against the local shadow-fork started by setup/fork.sh — inside a sandbox container.
+#
+# The sandbox is a Docker container made from the Foundry image (bash, cast, forge) plus jq
+# and curl, and nothing else, that can only talk to the fork:
+#   - it sits on a throwaway Docker network created with --internal (no route to the internet
+#     or to your machine); the fork's own container is attached to that network too, under the
+#     name "anvil", so the script reaches it at http://anvil:8545 (that is the RPC_URL it gets);
+#   - move.sh is mounted read-only as the only file it sees: it must be self-contained (it is
+#     also the only case file that goes into the package); the root filesystem is read-only
+#     (just a small /tmp), no Linux capabilities, no privilege escalation, and limits on
+#     memory, CPUs, processes and run time;
+#   - nothing of yours is passed in: no environment, no keys, no home directory.
+# So move.sh must reach the fork through "${RPC_URL}" (the template does) and may only use
+# bash, the Foundry tools (cast, forge, anvil), jq, curl and the basic Linux utilities.
+#
+# The image is built from recovery-tx/sandbox/Dockerfile the first time (needs internet then,
+# for apt) and tagged with a hash of the Dockerfile and the base image, so it is rebuilt only
+# when either changes.
+#
+# Requires: docker (daemon running), curl. The fork must be the container started by
+# setup/fork.sh (named zkevm-shadow-fork-<port>), reachable at RPC_URL on this machine.
 #
 # Usage: recovery-tx/run.sh cases/<your-case-id>/move.sh
+#
+# Env overrides:
+#   RPC_URL          the fork's JSON-RPC as seen from this machine (default http://127.0.0.1:8545)
+#   SANDBOX_IMAGE    use this image as the sandbox instead of building the one above (it needs
+#                    bash and whatever your move.sh uses)
+#   ANVIL_IMAGE      Foundry image the sandbox image is built from (default ghcr.io/foundry-rs/foundry:v1.5.1)
+#   SANDBOX_TIMEOUT  seconds before the script is killed (default 600)
+#   SANDBOX_MEMORY   memory limit (default 512m)
 set -euo pipefail
 
 script_path="${1:?Usage: recovery-tx/run.sh <path-to-move.sh>}"
 RPC_URL="${RPC_URL:-http://127.0.0.1:8545}"
+SANDBOX_IMAGE="${SANDBOX_IMAGE:-}"
+FOUNDRY_IMAGE="${ANVIL_IMAGE:-ghcr.io/foundry-rs/foundry:v1.5.1}"
+SANDBOX_TIMEOUT="${SANDBOX_TIMEOUT:-600}"
+SANDBOX_MEMORY="${SANDBOX_MEMORY:-512m}"
 
-if ! command -v cast >/dev/null 2>&1; then
-    echo "Error: 'cast' not found in \$PATH. Install the Foundry toolchain from https://getfoundry.sh" >&2
+for bin in docker curl; do
+    if ! command -v "${bin}" >/dev/null 2>&1; then
+        echo "Error: '${bin}' not found in \$PATH." >&2
+        [ "${bin}" = "docker" ] && echo "Install Docker from https://docs.docker.com/get-docker/" >&2
+        exit 1
+    fi
+done
+if ! docker info >/dev/null 2>&1; then
+    echo "Error: docker is installed but its daemon is not reachable." >&2
     exit 1
 fi
 
@@ -24,4 +63,89 @@ if ! curl -sS -X POST "${RPC_URL}" -H 'Content-Type: application/json' \
     exit 1
 fi
 
-RPC_URL="${RPC_URL}" bash "${script_path}"
+fork_port="$(printf '%s' "${RPC_URL}" | sed -n 's#^http://\(127\.0\.0\.1\|localhost\):\([0-9]\{1,5\}\)/\{0,1\}$#\2#p')"
+if [ -z "${fork_port}" ]; then
+    echo "Error: RPC_URL must be http://127.0.0.1:<port> (the fork on this machine); it is ${RPC_URL}." >&2
+    exit 1
+fi
+fork_container="zkevm-shadow-fork-${fork_port}"
+if ! docker inspect -f '{{.State.Running}}' "${fork_container}" 2>/dev/null | grep -qx true; then
+    echo "Error: the container ${fork_container} is not running. The sandbox attaches to the fork started by setup/fork.sh (ANVIL_PORT=${fork_port})." >&2
+    exit 1
+fi
+
+# The sandbox image: built once from recovery-tx/sandbox/Dockerfile, tagged by a hash of it.
+if [ -z "${SANDBOX_IMAGE}" ]; then
+    sandbox_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sandbox"
+    if command -v sha256sum >/dev/null 2>&1; then
+        image_hash="$(cat "${sandbox_dir}/Dockerfile" <(printf '%s' "${FOUNDRY_IMAGE}") | sha256sum | cut -c1-12)"
+    else
+        image_hash="$(cat "${sandbox_dir}/Dockerfile" <(printf '%s' "${FOUNDRY_IMAGE}") | shasum -a 256 | cut -c1-12)"
+    fi
+    SANDBOX_IMAGE="zkevm-kit-sandbox:${image_hash}"
+    if ! docker image inspect "${SANDBOX_IMAGE}" >/dev/null 2>&1; then
+        echo "Building the sandbox image ${SANDBOX_IMAGE} (first run only; needs internet) ..." >&2
+        docker build -q --build-arg "FOUNDRY_IMAGE=${FOUNDRY_IMAGE}" -t "${SANDBOX_IMAGE}" "${sandbox_dir}" >/dev/null \
+            || { echo "Error: could not build the sandbox image from ${sandbox_dir}/Dockerfile." >&2; exit 1; }
+    fi
+fi
+
+suffix="${fork_port}-$$"
+net="zkevm-sandbox-${suffix}"
+sandbox="zkevm-sandbox-run-${suffix}"
+work_dir="$(mktemp -d)"
+net_created=0
+attached=0
+
+cleanup() {
+    local rc=$?
+    set +e
+    docker rm -f "${sandbox}" >/dev/null 2>&1
+    [ "${attached}" -eq 0 ] || docker network disconnect -f "${net}" "${fork_container}" >/dev/null 2>&1
+    [ "${net_created}" -eq 0 ] || docker network rm "${net}" >/dev/null 2>&1
+    rm -rf "${work_dir}"
+    return "${rc}"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# The script is copied to a directory the container's user can read, whatever the permissions
+# of the original.
+mkdir -p "${work_dir}/sandbox"
+cp "${script_path}" "${work_dir}/sandbox/move.sh"
+chmod 755 "${work_dir}" "${work_dir}/sandbox"
+chmod 644 "${work_dir}/sandbox/move.sh"
+
+docker network create --internal "${net}" >/dev/null
+net_created=1
+docker network connect --alias anvil "${net}" "${fork_container}" >/dev/null
+attached=1
+
+echo "Running ${script_path} in a sandbox (${SANDBOX_IMAGE}; network: only the fork)." >&2
+# The container's stdout/stderr are move.sh's own: callers read the tx receipt from them.
+# --entrypoint bash: the image's entrypoint is not used. HOME and /tmp are a small tmpfs.
+docker run --rm --name "${sandbox}" \
+    --network "${net}" \
+    --read-only --tmpfs /tmp:rw,nosuid,size=64m \
+    --cap-drop ALL --security-opt no-new-privileges \
+    --pids-limit 256 --memory "${SANDBOX_MEMORY}" --cpus 1 \
+    -e HOME=/tmp -e RPC_URL=http://anvil:8545 -e ETH_RPC_URL=http://anvil:8545 \
+    -v "${work_dir}/sandbox:/sandbox:ro" -w /tmp \
+    --entrypoint bash "${SANDBOX_IMAGE}" /sandbox/move.sh </dev/null &
+run_pid=$!
+# Watchdog (no `timeout` on stock macOS): kills the container if it runs too long.
+# Its output goes to /dev/null: a leftover `sleep` must not keep the caller's pipe (tee) open.
+( exec >/dev/null 2>&1; sleep "${SANDBOX_TIMEOUT}"; touch "${work_dir}/timed_out"; docker rm -f "${sandbox}" ) &
+watchdog_pid=$!
+set +e
+wait "${run_pid}"
+run_rc=$?
+set -e
+pkill -P "${watchdog_pid}" 2>/dev/null || true
+kill "${watchdog_pid}" 2>/dev/null || true
+wait "${watchdog_pid}" 2>/dev/null || true
+if [ -f "${work_dir}/timed_out" ]; then
+    echo "Error: move.sh was killed after ${SANDBOX_TIMEOUT}s (SANDBOX_TIMEOUT)." >&2
+    exit 124
+fi
+exit "${run_rc}"
