@@ -294,7 +294,10 @@ is the port).
 
 Everything it prints (including Anvil's own output) is also saved to `setup/fork.log`
 (override with `FORK_LOG`), overwritten on every start — it goes into your submission, so don't
-copy the console by hand. If your RPC URL carries an API key it is masked in both places.
+copy the console by hand. A submission must use the official RPC, `https://zkevm-rpc.com/` (the default, so leave `L2_RPC_URL`
+unset): `prepare-submission.sh` and `verify-submission.sh` refuse another `L2_RPC_URL` or a `FORK_BLOCK`
+unless you pass `--allow-test-fork`, and a package made that way is not valid for a real submission (and
+its log, which is not masked, may contain your RPC URL).
 
 ## Support
 

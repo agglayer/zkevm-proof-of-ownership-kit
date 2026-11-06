@@ -311,9 +311,9 @@ pkg() { # <case dir> [extra args] — non-interactive (no TTY)
     fork_env "${repo_root}/submission/prepare-submission.sh" "${dir}" "$@" </dev/null
 }
 
-# Negative: a fork that is not at the halt block is refused unless --allow-test-fork.
-expect_fail "prepare-submission.sh refuses a test fork without --allow-test-fork" pkg "${CASE_DIR}" --output-dir "${OUT_DIR}"
-grep -q "not at the halt block" "${WORKDIR}/neg.out" || fail "expected the halt-block message"
+# Negative: a non-standard fork (another L2_RPC_URL, FORK_BLOCK) is refused unless --allow-test-fork.
+expect_fail "prepare-submission.sh refuses a non-standard fork without --allow-test-fork" pkg "${CASE_DIR}" --output-dir "${OUT_DIR}"
+grep -q "non-standard fork configuration" "${WORKDIR}/neg.out" || fail "expected the non-standard fork message"
 
 # Negative: declaring more than the vault holds is caught before anything runs.
 write_recovery "${CASE_DIR}/recovery.json" "$((vault_wei))0"

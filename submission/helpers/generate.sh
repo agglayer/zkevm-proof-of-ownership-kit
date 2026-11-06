@@ -38,9 +38,9 @@
 # Options:
 #   --out-dir <dir>     where to write the files (default: cases/<case-id>/generated). Files
 #                       are overwritten; nothing else in the directory is touched.
-#   --allow-test-fork   TESTING ONLY: accept a fork that is not at the halt block (started
-#                       with FORK_BLOCK). The manifest records it; the result is not valid
-#                       for a real submission.
+#   --allow-test-fork   TESTING ONLY: accept a non-standard fork (another L2_RPC_URL than the
+#                       official https://zkevm-rpc.com/, or FORK_BLOCK). The manifest records
+#                       it (test_fork); the result is not valid for a real submission.
 #
 # Env overrides:
 #   RPC_URL    where the fork is served (default: http://127.0.0.1:8545; it must be
@@ -174,6 +174,18 @@ funds="$(jq -c '.funds[]' "${recovery_path}")"
 # --- 2. The fork -------------------------------------------------------------------------
 
 step "2. Checking the fork"
+# A non-standard fork configuration (another L2_RPC_URL, or FORK_BLOCK) is a test: it needs
+# --allow-test-fork and the package is then marked as a test fork, not valid for a submission.
+# The state of the fork is whatever the RPC serves, so a real one must come from the official RPC.
+official_rpc="https://zkevm-rpc.com"
+nonstandard=""
+[ -z "${FORK_BLOCK:-}" ] || nonstandard="FORK_BLOCK is set"
+if [ -n "${L2_RPC_URL:-}" ] && [ "${L2_RPC_URL%/}" != "${official_rpc}" ]; then
+    nonstandard="L2_RPC_URL is not the official ${official_rpc}/"
+fi
+if [ -n "${nonstandard}" ] && [ "${allow_test_fork}" -ne 1 ]; then
+    die "non-standard fork configuration (${nonstandard}). A real submission must fork from the official RPC ${official_rpc}/ at the halt block: unset L2_RPC_URL and FORK_BLOCK. For a test run use --allow-test-fork (the package is then NOT valid for a real submission)."
+fi
 fork_pid=""
 fork_container=""
 stop_fork() {
@@ -223,12 +235,12 @@ confirmed_line="$(grep -E "^fork_block matches the network's latest block: [0-9]
 fork_block="${confirmed_line##*: }"
 
 test_fork=false
-if grep -q "^WARNING: FORK_BLOCK=" "${FORK_LOG}" || [ "${fork_block}" != "${halt_block}" ]; then
+if [ -n "${nonstandard}" ] || grep -q "^WARNING: FORK_BLOCK=" "${FORK_LOG}" || [ "${fork_block}" != "${halt_block}" ]; then
     if [ "${allow_test_fork}" -ne 1 ]; then
-        die "the fork is not at the halt block (${halt_block}; log says ${fork_block}) — a package built on it would not be accepted. Restart setup/fork.sh without FORK_BLOCK."
+        die "the fork is not at the halt block (${halt_block}; log says ${fork_block}) — a package built on it would not be accepted. Unset FORK_BLOCK."
     fi
     test_fork=true
-    echo "WARNING: test fork (block ${fork_block}) accepted by --allow-test-fork; this package is NOT valid for a real submission."
+    echo "WARNING: test fork (${nonstandard:-block ${fork_block}}) accepted by --allow-test-fork; this package is NOT valid for a real submission."
 fi
 echo "Fork log: fork block ${fork_block} confirmed against the network's latest block."
 

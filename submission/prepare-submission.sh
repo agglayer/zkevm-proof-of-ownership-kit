@@ -24,8 +24,8 @@
 #
 # Options:
 #   --output-dir <dir>  where to write the .tgz (default: the case directory)
-#   --allow-test-fork   TESTING ONLY: accept a fork that is not at the halt block (FORK_BLOCK).
-#                       Such a package is not valid for a real submission.
+#   --allow-test-fork   TESTING ONLY: accept a non-standard fork (another L2_RPC_URL, or FORK_BLOCK).
+#                       Such a package is marked as a test fork and is not valid for a real submission.
 #
 # Env overrides: RPC_URL (default http://127.0.0.1:8545), FORK_LOG, and the settings of
 # setup/fork.sh (L2_RPC_URL, ...: `source setup/.env` first if you use one).

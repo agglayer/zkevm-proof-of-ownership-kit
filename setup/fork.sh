@@ -9,7 +9,12 @@
 # (Foundry toolchain, https://getfoundry.sh); this script only warns if it is missing.
 #
 # Env overrides (see .env.example):
-#   L2_RPC_URL   L2 JSON-RPC endpoint to fork from (default: public zkEVM mainnet RPC)
+#   L2_RPC_URL   L2 JSON-RPC endpoint to fork from (default: the official public RPC,
+#                https://zkevm-rpc.com/). The state the fork serves is whatever the RPC says, so
+#                a submission must be made from the official one: submission/prepare-submission.sh
+#                and verify-submission.sh refuse any other value (and FORK_BLOCK) unless
+#                --allow-test-fork, and then the package is not valid. The log is not masked: it
+#                prints the URL, which is why it must be the public one.
 #   ANVIL_PORT   Local port Anvil listens on (default: 8545)
 #   BLOCK_TIME   Anvil --block-time in seconds (default: 2)
 #   ANVIL_IMAGE  Foundry Docker image Anvil runs from (default: ghcr.io/foundry-rs/foundry:v1.5.1)
@@ -20,6 +25,7 @@
 #                33391890). It must still equal the RPC's latest block, so point
 #                L2_RPC_URL at a test node whose head is that block. A non-default value
 #                is flagged with a warning in the output, so it is visible in fork.log.
+#                (see L2_RPC_URL; the log of a test fork may contain your RPC URL: do not send it).
 set -euo pipefail
 
 L2_RPC_URL="${L2_RPC_URL:-https://zkevm-rpc.com/}"
@@ -63,26 +69,15 @@ fi
 fork_url="$(printf '%s' "${L2_RPC_URL}" | sed -e 's#^\([a-zA-Z]*://\)localhost\([:/]\)#\1host.docker.internal\2#' -e 's#^\([a-zA-Z]*://\)127\.0\.0\.1\([:/]\)#\1host.docker.internal\2#')"
 
 # From here on everything printed (this script and Anvil) goes to the screen and to
-# FORK_LOG. The RPC URL may carry an API key, so every occurrence of it is replaced by a
-# masked copy (userinfo, path and query string hidden) before it reaches either. A key embedded
-# in the host name itself (https://<key>.provider.io) cannot be masked generically: use a
-# provider that puts it in the path, query or userinfo, or review fork.log before sending it. `tee -i` ignores
-# Ctrl-C so the log is complete; it ends by itself when Anvil closes the pipe.
-masked_url="$(printf '%s' "${L2_RPC_URL}" | sed -e 's/?.*$/?***/' -e 's#^\([a-zA-Z]*://\)[^/@]*@#\1***@#' -e 's#^\([a-zA-Z]*://[^/]*\)/..*$#\1/***#')"
-mask_secrets() {
-    local line
-    while IFS= read -r line || [ -n "${line}" ]; do
-        line="${line//"${L2_RPC_URL}"/${masked_url}}"
-        printf '%s\n' "${line//"${fork_url}"/${masked_url}}"
-    done
-}
-exec > >(mask_secrets | tee -i "${FORK_LOG}") 2>&1
+# FORK_LOG. `tee -i` ignores Ctrl-C so the log is complete; it ends by itself when Anvil closes
+# the pipe.
+exec > >(tee -i "${FORK_LOG}") 2>&1
 echo "Saving the full output to ${FORK_LOG}"
 if [ "${fork_block}" -ne "${halt_block}" ]; then
     echo "WARNING: FORK_BLOCK=${fork_block} overrides the halt block (${halt_block}). Testing only: a submission built on this fork will not be accepted."
 fi
 
-echo "Fetching latest block from ${masked_url} ..."
+echo "Fetching latest block from ${L2_RPC_URL} ..."
 hex_block="$(curl -sS -X POST "${L2_RPC_URL}" \
     -H 'Content-Type: application/json' \
     --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' | jq -r '.result')"

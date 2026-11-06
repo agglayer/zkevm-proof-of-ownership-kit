@@ -73,7 +73,7 @@ plain and step-by-step.
 
 - `setup/` — `fork.sh` starts the Anvil shadow-fork pinned to the halt block; `.env.example` holds
   the optional overrides (`L2_RPC_URL`, `ANVIL_PORT`, `BLOCK_TIME`, `ANVIL_IMAGE`, `FORK_LOG`, test-only `FORK_BLOCK`). `fork.sh`
-  also saves its full output (masking the RPC URL) to `setup/fork.log`.
+  also saves its full output to `setup/fork.log`, unmasked: a submission must fork from the official RPC `https://zkevm-rpc.com/`, and `helpers/generate.sh` refuses another `L2_RPC_URL` or a `FORK_BLOCK` unless `--allow-test-fork` (the package is then marked `test_fork`), so the log has no API key.
 - `recovery-tx/` — `impersonate-and-move.template.sh` (annotated template), `run.sh` (runs a
   case's `move.sh` against the fork, inside a sandbox container), `validate-recovery.sh` (offline check of a case's
   `recovery.json`), `list-impersonated.sh` (derives senders from receipts and

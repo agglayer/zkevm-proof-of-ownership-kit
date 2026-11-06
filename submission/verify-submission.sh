@@ -26,7 +26,7 @@
 #
 # Options:
 #   --allow-test-fork   TESTING ONLY: accept a package built on a test fork (manifest
-#                       test_fork=true) and a fork that is not at the halt block
+#                       test_fork=true) and a non-standard fork here (another L2_RPC_URL, FORK_BLOCK)
 #
 # Env overrides: RPC_URL (default http://127.0.0.1:8545; nothing may answer there, the fork is
 # started on that port), FORK_LOG (default: a temp file) and the settings of setup/fork.sh
