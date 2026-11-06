@@ -49,7 +49,8 @@ For multi-step tasks, state a brief plan with a verify step for each item.
 
 ## Third-Party Tool Docs
 
-The only third-party dependency is the Foundry toolchain (`anvil`, `cast`). Its CLI flags change
+The third-party dependencies are the Foundry toolchain (`anvil`, `cast`) and Docker (`fork.sh` runs
+`anvil` from the `ghcr.io/foundry-rs/foundry` image). Foundry's CLI flags change
 between releases, so check `cast <cmd> --help` or the **context7** MCP rather than relying on
 training data. If the context7 MCP server is not available, set it up:
 https://context7.com/install
@@ -71,25 +72,36 @@ plain and step-by-step.
 ## Repository Structure
 
 - `setup/` — `fork.sh` starts the Anvil shadow-fork pinned to the halt block; `.env.example` holds
-  the optional overrides (`L2_RPC_URL`, `ANVIL_PORT`, `BLOCK_TIME`).
+  the optional overrides (`L2_RPC_URL`, `ANVIL_PORT`, `BLOCK_TIME`, `ANVIL_IMAGE`, `FORK_LOG`, test-only `FORK_BLOCK`). `fork.sh`
+  also saves its full output (masking the RPC URL) to `setup/fork.log`.
 - `recovery-tx/` — `impersonate-and-move.template.sh` (annotated template), `run.sh` (runs a
-  case's `move.sh` against the fork), `list-impersonated.sh` (derives senders from receipts and
+  case's `move.sh` against the fork), `validate-recovery.sh` (offline check of a case's
+  `recovery.json`), `list-impersonated.sh` (derives senders from receipts and
   verifies a case's `signatures.json`).
 - `ownership-proof/` — `message-template.txt` (the fixed proof message), `sign-message.sh`
   (EIP-191 signing via hardware wallet / keystore / hidden prompt, or `--print-message` for
   Etherscan Verified Signatures), and `verify-signature.sh` (verifies every entry of a
   `signatures.json`; the single source of the signature rules, also called by
   `list-impersonated.sh`).
-- `cases/` — `_template/` is copied to `cases/<case-id>/` per stakeholder (`README.md`, `move.sh`,
-  `signatures.json`).
-- `submission/SUBMIT.md` — checklist of what the stakeholder sends back to Polygon.
+- `cases/` — `new-case.sh` copies `_template/` to `cases/<case-id>/` per stakeholder (`README.md`,
+  `recovery.json`, `move.sh`, `signatures.json`). `recovery.json` is the explicit claim — locked
+  contract, funds (token + amount in base units, as a string) and destination wallet; its schema
+  lives in `recovery-tx/validate-recovery.sh`.
+- `submission/` — `package.sh` runs a case against the fork and builds the `.tgz` to submit:
+  validates `recovery.json`, checks `fork.log`, runs `move.sh`, compares the balances of the locked
+  contract and the destination with the declared funds (amounts through `bc`: they are 256-bit),
+  derives the senders from the mined blocks, requires a valid signature for every EOA sender plus
+  the destination (prompting when run from a terminal) and writes `manifest.json` with the sha256 of
+  each file. `SUBMIT.md` is the checklist of what the stakeholder sends back to Polygon.
+- `test/e2e/` — end-to-end test (geth `--dev` in Docker + `setup/fork.sh` + a whole case through
+  `package.sh`), run by `.github/workflows/e2e.yml`.
 
 Fork-state verification lives inside `setup/fork.sh` (it refuses to start unless the RPC's
 latest block is the halt block); there is no separate verifier for it.
 
 ## Tech Stack
 
-Plain Bash on top of Foundry (`anvil`, `cast`), plus `curl` and `jq`. No Node, Go, or package
+Plain Bash on top of Foundry (`cast`; `anvil` runs in Docker), plus `curl` and `jq`. No Node, Go, or package
 manager. Scripts must run on macOS's stock Bash 3.2 as well as Linux Bash 5.
 
 ## End-to-End Workflow
@@ -101,7 +113,9 @@ All commands run from the **repo root**.
 cd setup && cp .env.example .env && source .env && ./fork.sh
 
 # 2. Start a case and fill in cases/<case-id>/move.sh
-cp -r cases/_template cases/<case-id>
+cases/new-case.sh <case-id>
+#    fill in cases/<case-id>/recovery.json, then check it:
+./recovery-tx/validate-recovery.sh cases/<case-id>/recovery.json
 ./recovery-tx/run.sh cases/<case-id>/move.sh
 
 # 3. Sign — once per EOA sender and once for the destination EOA, same NONCE for the whole case
@@ -114,7 +128,9 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 ./recovery-tx/list-impersonated.sh --signatures cases/<case-id>/signatures.json <tx-hash> ...
 #    (signatures only, no fork needed: ./ownership-proof/verify-signature.sh cases/<case-id>/signatures.json)
 
-# 5. Package per submission/SUBMIT.md
+# 5. Package (on a fresh fork: restart fork.sh if you ran move.sh by hand). It repeats steps 2-4
+#    itself, asks for the missing signatures and writes the .tgz to submit; see submission/SUBMIT.md
+./submission/package.sh cases/<case-id>
 ```
 
 ## Invariants (do not break)
@@ -128,7 +144,8 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 - **The proof message is fixed.** `message-template.txt` must stay identical to the copies in
   `README.md` and `cases/_template/README.md`. Changing it invalidates every signature already
   collected, so treat it as a breaking change and ask first.
-- **`fork_block=33391890` is the network's halt block.** It is re-verified against the RPC on every
+- **`halt_block=33391890` is the network's halt block.** `FORK_BLOCK` can override it for tests only (it
+  prints a warning, kept in `fork.log`). Either way it is re-verified against the RPC on every
   run; don't change it or relax the check.
 - **RPC responses are untrusted input.** Validate them (e.g. regex-check hex quantities) before
   using them in arithmetic or commands — Bash `$(( ))` evaluates variable contents recursively.
@@ -152,7 +169,8 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 
 ## Testing
 
-There is no automated test suite or CI. Verify changes with:
+`test/e2e/run.sh` is an end-to-end test (needs Docker, `cast`, `forge`) that CI runs on every PR
+(`.github/workflows/e2e.yml`); run it after touching any script. Besides it, verify changes with:
 
 ```bash
 shellcheck $(git ls-files '*.sh')
@@ -197,5 +215,7 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 | `list-impersonated.sh` / `verify-signature.sh` checks or output |                                      `cases/_template/README.md` step 4, `submission/SUBMIT.md`, `AGENTS.md`                                      |
 |                   `fork.sh` behavior or output                  |                                    `README.md` (Running the shadow-fork), `submission/SUBMIT.md` fork-logs item                                   |
 |          `recovery-tx/impersonate-and-move.template.sh`         |                                                   `cases/_template/move.sh` (keep them in sync)                                                   |
+|            `recovery.json` fields (`validate-recovery.sh`)         | `cases/_template/recovery.json` and README step 2, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                                       |
+|                  `submission/package.sh` checks or output        | `submission/SUBMIT.md` ("in the package" marks), `cases/_template/README.md` step 5, `test/e2e/run.sh` step 8, `AGENTS.md` |
 |                 Files added/removed/implemented                 |                                                `README.md` layout, `AGENTS.md` Repository Structure                                               |
-|                     What stakeholders submit                    |                                             `submission/SUBMIT.md`, `cases/_template/README.md` step 5                                            |
+|                     What stakeholders submit                    |                      `submission/SUBMIT.md`, `cases/_template/README.md` step 5, `submission/package.sh` (package layout, manifest)                     |

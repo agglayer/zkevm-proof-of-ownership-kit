@@ -45,11 +45,12 @@ zkevm-proof-of-ownership-kit/
 ├── README.md                          # this file
 ├── setup/
 │   ├── fork.sh                        # spins up the shadow-fork against zkEVM mainnet state
-│   └── .env.example                   # RPC endpoint, Anvil port, block time overrides
+│   └── .env.example                   # RPC endpoint, Anvil port, block time, image overrides
 ├── recovery-tx/
 │   ├── impersonate-and-move.template.sh   # annotated template: impersonate the
 │   │                                        # relevant addresses and move funds to an EOA
 │   ├── run.sh                          # runs a case's move.sh against the fork
+│   ├── validate-recovery.sh            # checks a case's recovery.json (offline, jq only)
 │   └── list-impersonated.sh            # derives impersonated addresses from tx receipts,
 │                                          # cross-checks them against a case's signatures.json
 ├── ownership-proof/
@@ -60,12 +61,16 @@ zkevm-proof-of-ownership-kit/
 │                                         # Polygon on submission; run it yourself first)
 ├── cases/
 │   ├── README.md                       # how to start a new case from the template
-│   └── _template/                      # copy this to cases/<your-case-id>/
+│   ├── new-case.sh                     # copies _template/ to cases/<your-case-id>/
+│   └── _template/                      # the template new-case.sh copies
 │       ├── README.md                   # step-by-step walkthrough for your case
+│       ├── recovery.json               # which funds, from which contract, to which wallet
 │       ├── move.sh                     # your copy of the recovery-tx template, filled in
 │       └── signatures.json             # one {address, message, signature} entry per address
-└── submission/
-    └── SUBMIT.md                       # checklist of what to submit back to Polygon
+├── submission/
+│   ├── package.sh                      # runs a case on the fork, checks it and writes the .tgz
+│   └── SUBMIT.md                       # checklist of what to submit back to Polygon
+└── test/e2e/                           # end-to-end test (geth + fork + a case), run in CI
 ```
 
 ## Who needs a signature
@@ -102,21 +107,29 @@ No terminal, or a cold wallet only usable from the browser? Print the exact mess
 
 ## Prerequisites
 
-- The [Foundry toolchain](https://getfoundry.sh) — provides both `anvil` (the fork) and
-  `cast` (impersonation, sending transactions, and signing messages). Everything in this
-  kit is plain bash built on top of `cast`; no Node/Go toolchain required.
+- [Docker](https://docs.docker.com/get-docker/), running — the shadow-fork (`anvil`) runs
+  from the official Foundry image, so Anvil itself needs no install.
+- The [Foundry toolchain](https://getfoundry.sh) — provides `cast` (impersonation, sending
+  transactions, and signing messages). Everything in this kit is plain bash built on top
+  of `cast`; no Node/Go toolchain required.
 - `curl` and `jq`.
+
+`setup/fork.sh` checks at start that `docker` (and its daemon), `curl` and `jq` are
+available and tells you what is missing; it only warns if `cast` is not installed.
 
 ## How to use this kit
 
 1. **Fork.** Follow `setup/` (see below) to spin up and verify your shadow-fork.
-2. **Start your case.** Copy [`cases/_template/`](cases/_template/README.md) to
-   `cases/<your-case-id>/` and follow its README — it walks you through filling in
-   `move.sh`, running it against the fork, and collecting signatures into
+2. **Start your case.** Run `cases/new-case.sh <your-case-id>` (it copies
+   [`cases/_template/`](cases/_template/README.md) to `cases/<your-case-id>/`) and follow
+   its README — it walks you through declaring what you recover in `recovery.json`,
+   filling in `move.sh`, running it against the fork, and collecting signatures into
    `signatures.json` for every impersonated address plus your destination EOA.
-3. **Submit.** Follow [`submission/SUBMIT.md`](submission/SUBMIT.md) to package
-   everything and email it to
-   [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology) for review.
+3. **Package and submit.** On a fresh fork, run `submission/package.sh cases/<your-case-id>`:
+   it runs your `move.sh`, checks the result against `recovery.json`, asks you to sign
+   whatever is missing and writes a single `.tgz`. Email that file to
+   [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology) for review
+   (see [`submission/SUBMIT.md`](submission/SUBMIT.md)).
 
 ### Running the shadow-fork
 
@@ -131,6 +144,10 @@ source .env
 doesn't match the RPC's current latest block — so a stale or wrong RPC endpoint fails
 loudly instead of silently forking the wrong state. Leave it running in its own terminal;
 it's the node the rest of the kit connects to.
+
+Everything it prints (including Anvil's own output) is also saved to `setup/fork.log`
+(override with `FORK_LOG`), overwritten on every start — you submit that file, so don't
+copy the console by hand. If your RPC URL carries an API key it is masked in both places.
 
 ## Support
 

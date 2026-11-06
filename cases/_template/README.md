@@ -1,8 +1,9 @@
 # Case template
 
-Copy this whole directory to `cases/<your-case-id>/` (e.g. `cases/acme-eth-recovery/`)
-before editing anything — leave `cases/_template/` itself untouched so other
-stakeholders can copy it too.
+Create your case from the repo root with `cases/new-case.sh <your-case-id>` (e.g.
+`cases/new-case.sh acme-eth-recovery`), which copies this whole directory to
+`cases/<your-case-id>/` (a plain `cp -r` works too). Edit your copy — leave
+`cases/_template/` itself untouched so other stakeholders can copy it too.
 
 ## 1. Start the shadow-fork
 
@@ -17,9 +18,34 @@ source .env
 
 Leave it running — everything below connects to it.
 
-## 2. Fill in and run move.sh
+## 2. Declare what you recover, then fill in and run move.sh
 
-Edit `move.sh` in your case directory: replace the TODO addresses and the `cast send`
+First, fill in `recovery.json` in your case directory: the explicit statement of what
+you want to recover and where it should end up. Polygon checks the simulation against it.
+
+```json
+{
+  "locked_contract": "0x...",
+  "destination": "0x...",
+  "funds": [
+    { "token": "native", "amount": "1000000000000000000" },
+    { "token": "0x...", "amount": "5000000", "symbol": "USDC" }
+  ]
+}
+```
+
+- `locked_contract` — the Smart Contract holding the funds.
+- `destination` — the final wallet (EOA) that receives them; it must sign too (step 3).
+- `funds` — one entry per asset: `"native"` or the token's address, and the `amount` in
+  base units (wei for ETH) **as a string**. List each token once; add the amounts up.
+
+Check it (from the repo root):
+
+```bash
+./recovery-tx/validate-recovery.sh cases/<your-case-id>/recovery.json
+```
+
+Then edit `move.sh` in your case directory: replace the TODO addresses and the `cast send`
 call with whatever actually moves your locked funds to your destination EOA. See
 [`../../recovery-tx/impersonate-and-move.template.sh`](../../recovery-tx/impersonate-and-move.template.sh)
 for the annotated template this was copied from.
@@ -90,9 +116,22 @@ cover them with their controlling EOAs' signatures. It only checks senders, thou
 it can't know about your destination EOA (it never sends anything), so that signature
 is still on you to remember.
 
-## 5. Submit
+## 5. Package and submit
 
-Once `move.sh` ran successfully and `signatures.json` has one entry per impersonated
-address plus your destination EOA, follow
-[`../../submission/SUBMIT.md`](../../submission/SUBMIT.md) and email the package to
-[`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology).
+`submission/package.sh` does steps 2 to 4 for you and packages the result. Start from a
+**fresh fork** — `move.sh` already moved the funds on the fork if you ran it by hand, so
+stop `setup/fork.sh` and start it again — and run, from the repo root:
+
+```bash
+./submission/package.sh cases/<your-case-id>
+```
+
+It validates `recovery.json`, runs `move.sh`, checks that the funds declared in
+`recovery.json` really moved from the locked contract to your destination, works out
+which EOAs were impersonated, asks you to sign any that are missing (reusing the
+signatures already in `signatures.json`, with the same nonce) and writes
+`cases/<your-case-id>/<your-case-id>-<timestamp>.tgz`. If you cannot sign from the
+terminal, it stops and prints the exact commands; sign, restart the fork and run it again.
+
+Then follow [`../../submission/SUBMIT.md`](../../submission/SUBMIT.md) and email the
+`.tgz` to [`zkevm-claims@polygon.technology`](mailto:zkevm-claims@polygon.technology).
