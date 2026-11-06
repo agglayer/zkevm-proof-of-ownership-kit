@@ -24,7 +24,8 @@ Negative cases: non-owner withdraw reverts; missing owner signature makes `list-
 fail; `sign-message.sh` rejects `--private-key`; a forged signature does not verify; `prepare-submission.sh`
 refuses a test fork without `--allow-test-fork`, a `recovery.json` declaring more than the vault
 holds or less than `move.sh` moves, a missing owner signature (printing the command to sign) and
-running while something already answers on the fork port; `verify-submission.sh` refuses a test package without `--allow-test-fork`,
+running while something already answers on the fork port, a `move.sh` that tries to edit the state
+with `anvil_setBalance` (the sandbox only allows an RPC allowlist) and a tx still pending when `move.sh` exits; `verify-submission.sh` refuses a test package without `--allow-test-fork`,
 a file changed after packaging, a manifest that differs from a fresh run and a path-traversal entry.
 
 Everything (containers, temp dirs, fork process) is removed on exit, also on failure. Nothing is

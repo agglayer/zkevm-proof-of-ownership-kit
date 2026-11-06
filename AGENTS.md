@@ -158,7 +158,12 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
   both when generating a package and when Polygon verifies one, so `recovery-tx/run.sh` runs it in a
   Docker container on a `--internal` network (only the fork's container is attached, as `anvil`), with
   a read-only rootfs, no capabilities, `no-new-privileges`, limits on memory/CPU/pids/time, and only
-  `move.sh` mounted (read-only). Don't add a host-execution path, mount case files or keys into it,
+  `move.sh` mounted (read-only). It reaches the fork only through `recovery-tx/sandbox/rpc-proxy.py`,
+  a JSON-RPC allowlist (`eth_*`, `net_*`, `web3_*`, `anvil_impersonateAccount`/`stopImpersonating`,
+  `evm_mine`, `txpool_*`): the state cheat codes (`anvil_setBalance`/`setStorageAt`/`setCode`/`reset`,
+  `evm_snapshot`...) are refused, otherwise a `move.sh` could fake the balances the checks compare, or
+  make the fork fetch a URL. Gas is free on the fork so none is needed. Do not widen the allowlist
+  without a security review. Don't add a host-execution path, mount case files or keys into it,
   or pass the environment through. Consequence: `move.sh` must be self-contained and use `${RPC_URL}`. The sandbox image is built from
   `recovery-tx/sandbox/Dockerfile` (Foundry + `jq` + `curl`); keep it minimal.
 - **Contracts can't sign.** Ownership of an impersonated contract is proven by signatures from

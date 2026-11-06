@@ -54,7 +54,11 @@ something answers there.
 first time you run it, which needs internet once): it only sees the fork (at `$RPC_URL`, which the
 sandbox sets itself), has no internet and no access to your machine. So it must be
 **self-contained** — it is the only case file the sandbox gets — and use `"${RPC_URL}"` as in the
-template; it can use `bash`, `cast`/`forge`, `jq`, `curl` and the basic Linux utilities. The same
+template; it can use `bash`, `cast`/`forge`, `jq`, `curl` and the basic Linux utilities. It can only
+**send transactions** from impersonated accounts (`anvil_impersonateAccount`) — the state cheat codes
+(`anvil_setBalance`, `anvil_setStorageAt`, `anvil_setCode`, `anvil_reset`...) are refused, so
+the result is exactly what the transactions do. Gas is free on the fork: an impersonated account
+needs no ETH to send. The same
 sandbox is used when Polygon verifies your submission.
 
 If you ran it, note the transaction hash it prints — you can use it in step 3.

@@ -313,6 +313,22 @@ expect_fail "prepare-submission.sh collects a tx still pending when move.sh exit
     pkg "${CASE_PENDING}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -qi "${ATTACKER}" "${WORKDIR}/neg.out" || fail "expected the pending tx's sender to be required to sign"
 
+# Negative: a move.sh that edits the state directly (anvil_setBalance) instead of sending
+# transactions must be refused by the sandbox's RPC allowlist.
+CASE_FORGE="${WORKDIR}/case-forge"
+cp -r "${CASE_DIR}" "${CASE_FORGE}"
+write_recovery "${CASE_FORGE}/recovery.json" "${vault_wei}"
+cat >"${CASE_FORGE}/move.sh" <<FORGE
+#!/bin/bash
+set -euo pipefail
+cast rpc anvil_setBalance "${VAULT}" 0x0 --rpc-url "\${RPC_URL}" >/dev/null
+cast rpc anvil_setBalance "${DEST}" "$(cast to-hex "${vault_wei}")" --rpc-url "\${RPC_URL}" >/dev/null
+cast send --unlocked --from "${DEST}" "${DEST}" --value 0 --json --rpc-url "\${RPC_URL}"
+FORGE
+expect_fail "prepare-submission.sh refuses a move.sh that edits the state with anvil_setBalance" \
+    pkg "${CASE_FORGE}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "not allowed in the sandbox" "${WORKDIR}/neg.out" || fail "expected the sandbox RPC allowlist to refuse anvil_setBalance"
+
 # Positive: everything signed -> a package.
 write_recovery "${CASE_DIR}/recovery.json" "${vault_wei}"
 pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}" >"${WORKDIR}/package.out"
@@ -346,8 +362,8 @@ expect_fail "prepare-submission.sh refuses to run while something answers on the
 grep -q "something already answers" "${WORKDIR}/neg.out" || fail "expected the 'already answers' message"
 docker rm -f "${ANVIL_NAME}" >/dev/null 2>&1
 
-# Positive: the destination is also the sender (the owner withdraws to itself) and pays gas,
-# so its balance gains less than the amount; prepare-submission.sh adds the gas back and still passes.
+# Positive: the destination is also the sender (the owner withdraws to itself). Gas is free on the
+# fork, so its balance gains exactly the amount and no gas is paid (the check still adds any gas back).
 CASE_SELF="${WORKDIR}/case-self"
 cp -r "${CASE_DIR}" "${CASE_SELF}"
 sed "s/\"withdraw(address,uint256)\" \"${DEST}\"/\"withdraw(address,uint256)\" \"${OWNER}\"/" "${CASE_DIR}/move.sh" >"${CASE_SELF}/move.sh"
@@ -356,9 +372,9 @@ jq -n --arg locked "${VAULT}" --arg dest "${OWNER}" --arg amount "${vault_wei}" 
     '{locked_contract: $locked, destination: $dest, funds: [{token: "native", amount: $amount}]}' >"${CASE_SELF}/recovery.json"
 pkg "${CASE_SELF}" --allow-test-fork --output-dir "${WORKDIR}/out-self" >"${WORKDIR}/package-self.out"
 tar -xzf "${WORKDIR}"/out-self/case-self-*.tgz -C "${WORKDIR}/unpacked"
-jq -e '(.required_signers | length) == 1 and (.balances[0].destination_gas_paid | tonumber) > 0' \
+jq -e '(.required_signers | length) == 1 and (.balances[0].destination_gas_paid | tonumber) == 0' \
     "${WORKDIR}/unpacked/case-self/manifest.json" >/dev/null || fail "unexpected manifest for the self-withdraw case"
-echo "  package ok with destination == sender (gas paid added back)"
+echo "  package ok with destination == sender (gas is free on the fork)"
 
 # ---------------------------------------------------------------- 9. verify-submission.sh
 step "9. submission/verify-submission.sh on the package"

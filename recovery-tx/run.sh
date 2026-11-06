@@ -5,8 +5,15 @@
 # The sandbox is a Docker container made from the Foundry image (bash, cast, forge) plus jq
 # and curl, and nothing else, that can only talk to the fork:
 #   - it sits on a throwaway Docker network created with --internal (no route to the internet
-#     or to your machine); the fork's own container is attached to that network too, under the
-#     name "anvil", so the script reaches it at http://anvil:8545 (that is the RPC_URL it gets);
+#     or to your machine) and reaches the fork only through an RPC allowlist proxy
+#     (sandbox/rpc-proxy.py, another container on that network, named "anvil": the script's
+#     RPC_URL is http://anvil:8545). The proxy forwards eth_*, net_*, web3_*, anvil_impersonateAccount,
+#     anvil_stopImpersonating, evm_mine and txpool_* and refuses everything else, so move.sh cannot
+#     edit the state directly (anvil_setBalance, anvil_setStorageAt, anvil_setCode...) nor make the
+#     fork fetch a URL (anvil_reset): it can only send transactions from impersonated accounts. The
+#     fork is attached to a second internal network, shared only with the proxy;
+#   - gas is free on the fork (setup/fork.sh; the proxy zeroes the fee fields of the transactions):
+#     an impersonated account without ETH can send, so there is no need for anvil_setBalance;
 #   - move.sh is mounted read-only as the only file it sees: it must be self-contained (it is
 #     also the only case file that goes into the package); the root filesystem is read-only
 #     (just a small /tmp), no Linux capabilities, no privilege escalation, and limits on
@@ -27,7 +34,7 @@
 # Env overrides:
 #   RPC_URL          the fork's JSON-RPC as seen from this machine (default http://127.0.0.1:8545)
 #   SANDBOX_IMAGE    use this image as the sandbox instead of building the one above (it needs
-#                    bash and whatever your move.sh uses)
+#                    bash, curl, python3 (it also runs the proxy) and whatever your move.sh uses)
 #   ANVIL_IMAGE      Foundry image the sandbox image is built from (default ghcr.io/foundry-rs/foundry:v1.5.1)
 #   SANDBOX_TIMEOUT  seconds before the script is killed (default 600)
 #   SANDBOX_MEMORY   memory limit (default 512m)
@@ -79,9 +86,9 @@ if ! docker inspect -f '{{.State.Running}}' "${fork_container}" 2>/dev/null | gr
     exit 1
 fi
 
+sandbox_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sandbox"
 # The sandbox image: built once from recovery-tx/sandbox/Dockerfile, tagged by a hash of it.
 if [ -z "${SANDBOX_IMAGE}" ]; then
-    sandbox_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sandbox"
     if command -v sha256sum >/dev/null 2>&1; then
         image_hash="$(cat "${sandbox_dir}/Dockerfile" <(printf '%s' "${FOUNDRY_IMAGE}") | sha256sum | cut -c1-12)"
     else
@@ -96,42 +103,74 @@ if [ -z "${SANDBOX_IMAGE}" ]; then
 fi
 
 suffix="${fork_port}-$$"
-net="zkevm-sandbox-${suffix}"
+net_a="zkevm-sandbox-a-${suffix}"   # move.sh <-> proxy
+net_b="zkevm-sandbox-b-${suffix}"   # proxy <-> fork
 sandbox="zkevm-sandbox-run-${suffix}"
+proxy="zkevm-sandbox-proxy-${suffix}"
 work_dir="$(mktemp -d)"
-net_created=0
+nets_created=0
 attached=0
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap below
 cleanup() {
     local rc=$?
     set +e
-    docker rm -f "${sandbox}" >/dev/null 2>&1
-    [ "${attached}" -eq 0 ] || docker network disconnect -f "${net}" "${fork_container}" >/dev/null 2>&1
-    [ "${net_created}" -eq 0 ] || docker network rm "${net}" >/dev/null 2>&1
+    docker rm -f "${sandbox}" "${proxy}" >/dev/null 2>&1
+    [ "${attached}" -eq 0 ] || docker network disconnect -f "${net_b}" "${fork_container}" >/dev/null 2>&1
+    [ "${nets_created}" -eq 0 ] || docker network rm "${net_a}" "${net_b}" >/dev/null 2>&1
     rm -rf "${work_dir}"
     return "${rc}"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-# The script is copied to a directory the container's user can read, whatever the permissions
-# of the original.
-mkdir -p "${work_dir}/sandbox"
+# The files are copied to a directory the container's user can read, whatever the permissions
+# of the originals.
+mkdir -p "${work_dir}/sandbox" "${work_dir}/proxy"
 cp "${script_path}" "${work_dir}/sandbox/move.sh"
-chmod 755 "${work_dir}" "${work_dir}/sandbox"
-chmod 644 "${work_dir}/sandbox/move.sh"
+cp "${sandbox_dir}/rpc-proxy.py" "${work_dir}/proxy/rpc-proxy.py"
+chmod 755 "${work_dir}" "${work_dir}/sandbox" "${work_dir}/proxy"
+chmod 644 "${work_dir}/sandbox/move.sh" "${work_dir}/proxy/rpc-proxy.py"
 
-docker network create --internal "${net}" >/dev/null
-net_created=1
-docker network connect --alias anvil "${net}" "${fork_container}" >/dev/null
+# Both networks are --internal (no route out). The fork is attached to net_b only for the proxy.
+docker network create --internal "${net_a}" >/dev/null
+docker network create --internal "${net_b}" >/dev/null
+nets_created=1
+docker network connect --alias anvil-real "${net_b}" "${fork_container}" >/dev/null
 attached=1
 
-echo "Running ${script_path} in a sandbox (${SANDBOX_IMAGE}; network: only the fork)." >&2
+# The proxy: reachable from the sandbox as "anvil", forwards only an allowlist of JSON-RPC methods
+# to the fork (see rpc-proxy.py: no anvil_setBalance / setStorageAt / setCode / reset, ...).
+docker run -d --name "${proxy}" --network "${net_a}" --network-alias anvil \
+    --read-only --tmpfs /tmp:rw,nosuid,size=16m \
+    --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 128m --cpus 1 \
+    -e HOME=/tmp -e UPSTREAM=http://anvil-real:8545 \
+    -v "${work_dir}/proxy:/proxy:ro" \
+    --entrypoint python3 "${SANDBOX_IMAGE}" /proxy/rpc-proxy.py >/dev/null
+docker network connect "${net_b}" "${proxy}" >/dev/null
+proxy_wait=0
+until docker exec "${proxy}" curl -s -m 2 -X POST localhost:8545 -H 'Content-Type: application/json' \
+    --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' 2>/dev/null | grep -q '"result"'; do
+    proxy_wait=$((proxy_wait + 1))
+    if [ "${proxy_wait}" -ge 30 ]; then
+        docker logs "${proxy}" >&2 2>&1 || true
+        echo "Error: the sandbox's RPC proxy did not come up." >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+# The fork's head is still the real block, with its real base fee: mine the first block of the
+# fork (base fee 0, see setup/fork.sh) so that gas estimation gives 0 and an account without ETH
+# can send.
+docker exec "${proxy}" curl -s -m 10 -X POST localhost:8545 -H 'Content-Type: application/json' \
+    --data '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":1}' >/dev/null || true
+
+echo "Running ${script_path} in a sandbox (${SANDBOX_IMAGE}; network: only the fork, through an RPC allowlist)." >&2
 # The container's stdout/stderr are move.sh's own: callers read the tx receipt from them.
 # --entrypoint bash: the image's entrypoint is not used. HOME and /tmp are a small tmpfs.
 docker run --rm --name "${sandbox}" \
-    --network "${net}" \
+    --network "${net_a}" \
     --read-only --tmpfs /tmp:rw,nosuid,size=64m \
     --cap-drop ALL --security-opt no-new-privileges \
     --pids-limit 256 --memory "${SANDBOX_MEMORY}" --cpus 1 \

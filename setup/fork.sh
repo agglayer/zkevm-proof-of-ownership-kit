@@ -114,6 +114,11 @@ echo "Starting Anvil shadow-fork (${ANVIL_IMAGE}) on http://127.0.0.1:${ANVIL_PO
 # retries/timeout + no internal rate limiting since every cold storage slot is a
 # round-trip to the upstream RPC.
 #
+# Gas is free on the fork (base fee, gas price and priority fee 0; the first mined block already
+# has base fee 0, recovery-tx/run.sh mines it before move.sh): an impersonated account that holds
+# no ETH can still send, so move.sh never needs anvil_setBalance (which the sandbox forbids, see
+# recovery-tx/run.sh). Gas costs are not part of what the kit checks.
+#
 # Anvil listens on all interfaces inside the container, but the port is published on this
 # machine's loopback only: the fork is unlocked (auto-impersonate), so it must not be
 # reachable from the network.
@@ -129,6 +134,9 @@ exec docker run --rm --init \
     --fork-block-number "${fork_block}" \
     --block-time "${BLOCK_TIME}" \
     --disable-block-gas-limit \
+    --block-base-fee-per-gas 0 \
+    --gas-price 0 \
+    --disable-min-priority-fee \
     --auto-impersonate \
     --retries 10 \
     --fork-retry-backoff 1000 \
