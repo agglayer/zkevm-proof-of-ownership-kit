@@ -2,9 +2,8 @@
 # Signs the fixed ownership-proof message (message-template.txt) via standard
 # personal_sign (EIP-191), and appends the result to a case's signatures.json.
 #
-# The message is bound to your case: it carries the locked contract and the destination (read
-# from the case's recovery.json) and the "case hash" of recovery.json + move.sh
-# (ownership-proof/case-hash.sh). So a signature only counts for those exact files: if
+# The message is bound to your case: it carries the "case hash" of recovery.json + move.sh
+# (ownership-proof/case-hash.sh), and recovery.json lists every output (bridge exit) you recover. So a signature only counts for those exact files: if
 # recovery.json or move.sh change afterwards — even a space — every signature must be made
 # again. Sign LAST, once both files are final, and read move.sh first: you are signing it.
 #
@@ -36,7 +35,7 @@
 # (the file is created with an empty array if it doesn't exist yet). With `-`, the entry
 # is printed to stdout instead. --print-message only prints the exact message to sign,
 # for signing outside this kit (e.g. https://etherscan.io/verifiedSignatures): check the
-# contract and destination in it before signing it.
+# case's recovery.json and move.sh before signing it.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -98,26 +97,14 @@ else
     echo "Error: CASE_DIR=cases/<case-id> is required with --print-message and with '-' (the message is bound to that case's recovery.json and move.sh)." >&2
     exit 1
 fi
-[ -f "${case_dir}/recovery.json" ] || { echo "Error: ${case_dir}/recovery.json not found — is ${case_dir} the case directory?" >&2; exit 1; }
+[ -f "${case_dir}/recovery.json" ] || { echo "Error: ${case_dir}/recovery.json not found — generate it first (submission/prepare-submission.sh ${case_dir} writes it from move.sh), or check that ${case_dir} is the case directory." >&2; exit 1; }
 case_hash="$("${script_dir}/case-hash.sh" "${case_dir}")"
-locked_contract="$(jq -r '.locked_contract // empty' "${case_dir}/recovery.json")"
-destination="$(jq -r '.destination // empty' "${case_dir}/recovery.json")"
-for v in "${locked_contract}" "${destination}"; do
-    if ! [[ "${v}" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
-        echo "Error: ${case_dir}/recovery.json needs a valid locked_contract and destination before signing (check it with recovery-tx/validate-recovery.sh)." >&2
-        exit 1
-    fi
-done
-locked_contract="$(cast to-check-sum-address "${locked_contract}")"
-destination="$(cast to-check-sum-address "${destination}")"
 
 address="$(cast to-check-sum-address "${ADDRESS}")"
 date_str="$(date -u +%Y-%m-%d)"
 
 template="$(cat "${script_dir}/message-template.txt")"
 message="${template//<address>/${address}}"
-message="${message//<locked_contract>/${locked_contract}}"
-message="${message//<destination>/${destination}}"
 message="${message//<case_hash>/${case_hash}}"
 message="${message//<nonce>/${NONCE}}"
 message="${message//<date>/${date_str}}"

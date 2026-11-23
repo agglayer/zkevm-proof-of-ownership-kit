@@ -1,19 +1,21 @@
 #!/bin/bash
-# Validates a case's recovery.json — the explicit statement of which funds a stakeholder
-# wants to recover from which locked Smart Contract, and to which final wallet. Purely
-# offline: it checks the file's shape, not the chain (comparing it with the simulated
-# move is the job of the packaging/verification steps).
+# Validates a case's recovery.json — the list of bridge exits (outputs) a stakeholder recovers,
+# generated from the BridgeEvents of move.sh by recovery-tx/build-recovery.sh. Purely offline:
+# it checks the file's shape, not the chain (comparing it with the simulated move is the job
+# of the packaging/verification steps).
 #
-# Rules: every field below is required and no others are allowed; addresses are 0x + 40
-# hex and neither the zero address nor a template placeholder; `destination` differs from
-# `locked_contract`; `funds` has at least one entry, each with a `token` ("native" or an
-# ERC-20 address) and an `amount` — a positive integer in base units, written as a string
-# so big values are not rounded — and no token appears twice (merge them into one entry).
+# Rules: only the fields below, all required; addresses are 0x + 40 hex; networks and
+# deposit_count are uint32; `outputs` has at least one entry.
 #
 # Fields:
-#   locked_contract  the Smart Contract holding the funds
-#   destination      the final wallet (EOA) that receives them
-#   funds[]          { "token": "native"|"0x...", "amount": "<base units>", "symbol"?: "..." }
+#   version    1
+#   outputs[]  one per BridgeEvent, in the order move.sh emitted them, with aggkit's names:
+#     { "leaf_type": 0|1 (0 bridgeAsset, 1 bridgeMessage),
+#       "origin_network": <uint32>, "origin_address": "0x...",
+#       "destination_network": <uint32> (0 for a bridgeAsset), "destination_address": "0x...",
+#       "amount": "<base units, as a string>", "metadata": "0x<hex bytes>",
+#       "deposit_count": <uint32>,
+#       "from_address": "0x..." (the bridge caller), "txn_sender": "0x...", "to_address": "0x..." }
 #
 # Requires: jq.
 #
@@ -42,35 +44,33 @@ fi
 
 errors="$(jq -r '
   def addr: type == "string" and test("^0x[0-9a-fA-F]{40}$");
-  def placeholder: type == "string" and (ascii_downcase | . == "0x0000000000000000000000000000000000000000" or . == "0x000000000000000000000000000000000000dead");
-  . as $r
+  def uint32: type == "number" and . == floor and . >= 0 and . <= 4294967295;
+  ["leaf_type", "origin_network", "origin_address", "destination_network", "destination_address",
+   "amount", "metadata", "deposit_count", "from_address", "txn_sender", "to_address"] as $fields
+  | . as $r
   | if type != "object" then "the top level must be a JSON object"
     else
-      ( (keys_unsorted - ["locked_contract", "destination", "funds"])[]
-        | "unknown field: \(.)" ),
-      ( ("locked_contract", "destination") as $k
-        | if ($r[$k] | addr | not) then "\($k): must be an address (0x + 40 hex chars)"
-          elif ($r[$k] | placeholder) then "\($k): is still a template placeholder (zero address / 0x...dEaD)"
-          else empty end ),
-      ( if ($r.locked_contract | addr) and ($r.destination | addr)
-           and (($r.locked_contract | ascii_downcase) == ($r.destination | ascii_downcase))
-        then "destination: must differ from locked_contract" else empty end ),
-      ( if ($r.funds | type) != "array" or ($r.funds | length) == 0
-        then "funds: required, must be a non-empty list"
+      ( (keys_unsorted - ["version", "outputs"])[] | "unknown field: \(.)" ),
+      ( if $r.version != 1 then "version: must be 1" else empty end ),
+      ( if ($r.outputs | type) != "array" or ($r.outputs | length) == 0
+        then "outputs: required, must be a non-empty list"
         else
-          ( $r.funds | to_entries[] | .key as $i | .value as $f
-            | if ($f | type) != "object" then "funds[\($i)]: must be an object"
+          ( $r.outputs | to_entries[] | .key as $i | .value as $o | "outputs[\($i)]" as $w
+            | if ($o | type) != "object" then "\($w): must be an object"
               else
-                ( ($f | keys_unsorted - ["token", "amount", "symbol"])[] | "funds[\($i)]: unknown field: \(.)" ),
-                ( if $f.token == "native" or ($f.token | addr and (placeholder | not)) then empty
-                  else "funds[\($i)].token: must be \"native\" or a token address" end ),
-                ( if ($f.amount | type) != "string" then "funds[\($i)].amount: must be a string with the amount in base units (e.g. \"1000000000000000000\")"
-                  elif ($f.amount | test("^[1-9][0-9]*$") | not) then "funds[\($i)].amount: must be a positive integer in base units, got \"\($f.amount)\""
-                  else empty end ),
-                ( if ($f | has("symbol")) and (($f.symbol | type) != "string" or $f.symbol == "") then "funds[\($i)].symbol: must be a non-empty string when present" else empty end )
-              end ),
-          ( [ $r.funds[] | select(type == "object") | .token | select(type == "string") | ascii_downcase ]
-            | group_by(.)[] | select(length > 1) | "funds: token \(.[0]) is listed more than once — merge it into a single entry (sum the amounts)" )
+                ( ($o | keys_unsorted - $fields)[] | "\($w): unknown field: \(.)" ),
+                ( $fields[] as $k | select(($o | has($k)) | not) | "\($w): missing field: \($k)" ),
+                ( if $o.leaf_type == 0 or $o.leaf_type == 1 then empty else "\($w).leaf_type: must be 0 (bridgeAsset) or 1 (bridgeMessage)" end ),
+                ( ("origin_network", "destination_network", "deposit_count") as $k
+                  | if ($o[$k] | uint32) then empty else "\($w).\($k): must be a uint32" end ),
+                ( ("origin_address", "destination_address", "from_address", "txn_sender", "to_address") as $k
+                  | if ($o[$k] | addr) then empty else "\($w).\($k): must be an address (0x + 40 hex chars)" end ),
+                ( if ($o.amount | type) == "string" and ($o.amount | test("^(0|[1-9][0-9]*)$")) then empty
+                  else "\($w).amount: must be an integer in base units, written as a string" end ),
+                ( if ($o.metadata | type) == "string" and ($o.metadata | test("^0x([0-9a-fA-F]{2})*$")) then empty
+                  else "\($w).metadata: must be hex bytes (0x...)" end ),
+                ( if $o.leaf_type == 0 and $o.destination_network != 0 then "\($w).destination_network: must be 0 (Ethereum) for a bridgeAsset" else empty end )
+              end )
         end )
     end
 ' "${recovery_path}")"
@@ -81,4 +81,4 @@ if [ -n "${errors}" ]; then
     exit 1
 fi
 
-echo "OK: ${recovery_path} — $(jq -r '.funds | length' "${recovery_path}") fund(s) from $(jq -r '.locked_contract' "${recovery_path}") to $(jq -r '.destination' "${recovery_path}")"
+echo "OK: ${recovery_path} — $(jq -r '[.outputs[] | select(.leaf_type == 0)] | length' "${recovery_path}") bridgeAsset and $(jq -r '[.outputs[] | select(.leaf_type == 1)] | length' "${recovery_path}") bridgeMessage output(s)"

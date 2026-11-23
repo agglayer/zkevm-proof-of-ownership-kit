@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-// Minimal stand-in for a "locked" smart contract: it holds ETH that only its owner can move.
+// Minimal stand-in for a "locked" smart contract: it holds ETH that only its owner can move,
+// through a generic execute (like a multisig), e.g. to call the bridge.
 contract Vault {
     address public owner;
 
@@ -17,9 +18,9 @@ contract Vault {
         owner = newOwner;
     }
 
-    function withdraw(address payable to, uint256 amount) external {
+    function execute(address target, uint256 value, bytes calldata data) external {
         require(msg.sender == owner, "not owner");
-        (bool ok,) = to.call{value: amount}("");
-        require(ok, "transfer failed");
+        (bool ok,) = target.call{value: value}(data);
+        require(ok, "call failed");
     }
 }

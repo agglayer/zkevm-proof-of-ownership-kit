@@ -2,18 +2,21 @@
 # Builds the .tgz you send to Polygon for your case, guiding you step by step. It is the
 # only script you need in submission/: the ones in submission/helpers/ are called by it.
 #
-# Before running it, your case directory (cases/<case-id>/) must have:
-#   recovery.json    the funds, the locked contract and the destination wallet
-#   move.sh          the simulated recovery, filled in
-#   signatures.json  one signature per EOA that move.sh impersonates, plus the destination
-#                    (ownership-proof/sign-message.sh, same nonce for all, made once recovery.json
-#                    and move.sh are final: the signed message carries their hash) — if some are
-#                    missing, this script tells you which ones and how to sign them
+# Your case directory (cases/<case-id>/) must have:
+#   move.sh          the simulated recovery, filled in: it moves the locked funds into the bridge
+#                    (bridgeAsset / bridgeMessage)
+#   recovery.json    the outputs you recover. Written by the first run of this script from the
+#                    BridgeEvents of move.sh; check it, then sign
+#   signatures.json  one signature per EOA that move.sh impersonates (ownership-proof/sign-message.sh,
+#                    same nonce for all, made once recovery.json and move.sh are final: the signed
+#                    message carries their hash) — if some are missing, this script tells you which
+#                    ones and how to sign them
 #
 # What it does:
 #   1. checks those files are there and filled in;
-#   2. starts a fresh shadow-fork, runs move.sh on it and checks the result against
-#      recovery.json and signatures.json (helpers/generate.sh); the fork is stopped at the end;
+#   2. starts a fresh shadow-fork, runs move.sh on it, builds the outputs from its BridgeEvents
+#      (writing recovery.json if there is none yet, else checking it) and checks signatures.json
+#      (helpers/generate.sh); the fork is stopped at the end;
 #   3. packs everything into cases/<case-id>/<case-id>-<timestamp>.tgz (helpers/package.sh);
 #   4. tells you where to send it and how to verify it.
 #
@@ -113,13 +116,15 @@ case_id="$(basename "${case_dir}")"
 rel_case="cases/${case_id}"
 [ -n "${output_dir}" ] || output_dir="${case_dir}"
 
-for f in recovery.json move.sh; do
-    [ -f "${case_dir}/${f}" ] || die "${rel_case}/${f} not found. Start from cases/_template/ (cases/new-case.sh) and fill it in."
-done
+[ -f "${case_dir}/move.sh" ] || die "${rel_case}/move.sh not found. Start from cases/_template/ (cases/new-case.sh) and fill it in."
 echo "Case: ${case_id} (${case_dir})"
 
-if ! "${repo_root}/recovery-tx/validate-recovery.sh" "${case_dir}/recovery.json"; then
-    die "fix ${rel_case}/recovery.json (see ${rel_case}/README.md step 1) and run this again."
+if [ -f "${case_dir}/recovery.json" ]; then
+    if ! "${repo_root}/recovery-tx/validate-recovery.sh" "${case_dir}/recovery.json"; then
+        die "${rel_case}/recovery.json is not valid. Delete it and run this again: it is regenerated from move.sh."
+    fi
+else
+    echo "NOTE: ${rel_case}/recovery.json does not exist yet: step 2 writes it from the BridgeEvents of move.sh."
 fi
 
 if grep -qi '0x0000000000000000000000000000000000dEaD' "${case_dir}/move.sh"; then
@@ -131,7 +136,7 @@ signatures_path="${case_dir}/signatures.json"
 if [ ! -f "${signatures_path}" ] || ! jq -e 'type == "array" and length > 0' "${signatures_path}" >/dev/null 2>&1; then
     echo
     echo "NOTE: ${rel_case}/signatures.json has no signatures yet. Every EOA impersonated in"
-    echo "      move.sh and your destination wallet must sign (see ${rel_case}/README.md step 2)."
+    echo "      move.sh must sign (see ${rel_case}/README.md step 3)."
     echo "      The simulation below will tell you exactly which addresses and how to sign them."
     [ -f "${signatures_path}" ] || echo "[]" >"${signatures_path}"
 else

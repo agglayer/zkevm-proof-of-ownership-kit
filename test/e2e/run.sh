@@ -2,9 +2,10 @@
 # End-to-end test of the kit against a throwaway geth --dev node (stand-in for the halted
 # zkEVM mainnet), using only test keys.
 #
-# Flow: geth (docker) -> deploy a "locked" Vault + fund it -> head stays fixed -> start
-# setup/fork.sh (anvil in docker) with FORK_BLOCK = that head -> run a temporary case
-# (move.sh impersonating the Vault owner) with recovery-tx/run.sh -> sign with
+# Flow: geth (docker) -> deploy a mock bridge and a "locked" Vault + fund it -> head stays fixed
+# -> start setup/fork.sh (anvil in docker) with FORK_BLOCK = that head -> run a temporary case
+# (move.sh impersonating the Vault owner, which makes the Vault call bridgeAsset + bridgeMessage)
+# with recovery-tx/run.sh -> build recovery.json with build-recovery.sh -> sign with
 # ownership-proof/sign-message.sh -> check with list-impersonated.sh / verify-signature.sh.
 # Negative cases are checked too. Nothing is left in the repo; everything is cleaned up on exit.
 #
@@ -54,6 +55,9 @@ OWNER="$(cast wallet address --private-key "${OWNER_TEST_KEY}")"
 DEST="$(cast wallet address --private-key "${DEST_TEST_KEY}")"
 ATTACKER="$(cast wallet address --private-key "${ATTACKER_TEST_KEY}")"
 FUND_AMOUNT="5ether"
+ASSET_WEI="4000000000000000000"   # what the case bridges with bridgeAsset (the vault keeps the rest)
+MESSAGE_NETWORK=7
+MESSAGE_METADATA="0xdeadbeef"
 NONCE=424242
 
 WORKDIR="${E2E_WORKDIR:-$(mktemp -d "${TMPDIR:-/tmp}/zkevm-kit-e2e.XXXXXX")}"
@@ -129,7 +133,7 @@ export ETH_RPC_URL="${GETH_URL}"
 echo "  chainId $(cast chain-id --rpc-url "${GETH_URL}")"
 
 # ---------------------------------------------------------------- 2. vault
-step "2. Fund the owner and deploy the locked Vault"
+step "2. Fund the owner, deploy the mock bridge and the locked Vault"
 dev_acct="$(cast rpc eth_accounts --rpc-url "${GETH_URL}" | jq -r '.[0]')"
 [[ "${dev_acct}" =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "geth dev account not found"
 # A fresh geth --dev answers "transaction indexing is in progress" to receipt lookups until
@@ -146,7 +150,13 @@ cast send --unlocked --from "${dev_acct}" "${ATTACKER}" --value 10ether --rpc-ur
 
 mkdir -p "${WORKDIR}/forge/src"
 cp "${e2e_dir}/Vault.sol" "${WORKDIR}/forge/src/Vault.sol"
+cp "${e2e_dir}/MockBridge.sol" "${WORKDIR}/forge/src/MockBridge.sol"
 printf '[profile.default]\nsolc_version = "0.8.24"\nevm_version = "shanghai"\n' >"${WORKDIR}/forge/foundry.toml"
+BRIDGE="$(cd "${WORKDIR}/forge" && forge create src/MockBridge.sol:MockBridge --root . --broadcast --json \
+    --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" | jq -r '.deployedTo')"
+[[ "${BRIDGE}" =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "mock bridge deployment failed"
+# The scripts look for the zkEVM bridge; on this test chain it is the mock (test-only override).
+export BRIDGE_ADDRESS="${BRIDGE}"
 deploy_json="$(cd "${WORKDIR}/forge" && forge create src/Vault.sol:Vault --root . --broadcast --json \
     --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}")"
 VAULT="$(printf '%s' "${deploy_json}" | jq -r '.deployedTo')"
@@ -162,7 +172,20 @@ VAULT2="$(cd "${WORKDIR}/forge" && forge create src/Vault.sol:Vault --root . --b
 cast send "${VAULT2}" --value 1ether --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" >/dev/null
 cast send "${VAULT2}" "transferOwnership(address)" "${CONTROLLER}" --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" >/dev/null
 vault2_wei="$(balance_wei "${VAULT2}" "${GETH_URL}")"
-echo "  vault ${VAULT}, owner ${OWNER}; vault2 ${VAULT2} owned by the contract ${CONTROLLER}"
+echo "  bridge ${BRIDGE}; vault ${VAULT}, owner ${OWNER}; vault2 ${VAULT2} owned by the contract ${CONTROLLER}"
+
+# ERC-20s held by the vault: one native to this chain (the bridge locks it) and one wrapped (a token
+# of network 0, which the bridge burns).
+L1_TOKEN="0x1111111111111111111111111111111111111111"
+NATIVE_TOKEN="$(cd "${WORKDIR}/forge" && forge create src/MockBridge.sol:MockERC20 --root . --broadcast --json \
+    --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" --constructor-args "${BRIDGE}" | jq -r '.deployedTo')"
+WRAPPED_TOKEN="$(cd "${WORKDIR}/forge" && forge create src/MockBridge.sol:MockERC20 --root . --broadcast --json \
+    --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" --constructor-args "${BRIDGE}" | jq -r '.deployedTo')"
+[[ "${NATIVE_TOKEN}" =~ ^0x[0-9a-fA-F]{40}$ && "${WRAPPED_TOKEN}" =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "token deployment failed"
+cast send "${BRIDGE}" "setWrapped(uint32,address,address)" 0 "${L1_TOKEN}" "${WRAPPED_TOKEN}" --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" >/dev/null
+cast send "${NATIVE_TOKEN}" "mint(address,uint256)" "${VAULT}" 1000 --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" >/dev/null
+cast send "${WRAPPED_TOKEN}" "mint(address,uint256)" "${VAULT}" 500 --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" >/dev/null
+echo "  tokens: native ${NATIVE_TOKEN}, wrapped ${WRAPPED_TOKEN} (of ${L1_TOKEN} on network 0)"
 
 vault_wei="$(balance_wei "${VAULT}" "${GETH_URL}")"
 [ "${vault_wei}" = "5000000000000000000" ] || fail "vault balance on geth is ${vault_wei}"
@@ -192,49 +215,84 @@ fi
 export RPC_URL ETH_RPC_URL="${RPC_URL}"
 grep -q "WARNING: FORK_BLOCK=${STABLE_BLOCK}" "${FORK_LOG}" || fail "fork.log lacks the FORK_BLOCK warning"
 [ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "${vault_wei}" ] || fail "vault balance differs on the fork"
-dest_before="$(balance_wei "${DEST}" "${RPC_URL}")"
 echo "  fork up, vault funded on the fork"
 
 # ---------------------------------------------------------------- 5. case
-step "5. Temporary case: impersonate the owner and withdraw"
+step "5. Temporary case: impersonate the owner, the vault calls bridgeAsset + bridgeMessage"
 mkdir -p "${CASE_DIR}"
 cp -r "${repo_root}/cases/_template/." "${CASE_DIR}/"
-cat >"${CASE_DIR}/move.sh" <<MOVE
-#!/bin/bash
-# Temporary e2e case (generated by test/e2e/run.sh).
-set -euo pipefail
-RPC_URL="\${RPC_URL:-http://127.0.0.1:8545}"
-cast rpc anvil_impersonateAccount "${OWNER}" --rpc-url "\${RPC_URL}" >/dev/null
-cast send --unlocked --from "${OWNER}" "${VAULT}" "withdraw(address,uint256)" "${DEST}" "${vault_wei}" \\
-    --json --rpc-url "\${RPC_URL}"
-MOVE
-chmod +x "${CASE_DIR}/move.sh"
-# The signatures (step 6) are bound to recovery.json and move.sh, so both are final from here on.
-write_recovery() { # <path> <amount>
-    jq -n --arg locked "${VAULT}" --arg dest "${DEST}" --arg amount "$2" \
-        '{locked_contract: $locked, destination: $dest, funds: [{token: "native", amount: $amount}]}' >"$1"
+# bridge_calls <vault> <from> <asset destination> <asset wei>: the body of a move.sh in which <from>
+# makes <vault> bridge <asset wei> of ETH to <asset destination> on network 0, then send a message.
+bridge_calls() {
+    local asset_call message_call
+    asset_call="$(cast calldata "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "$3" "$4" 0x0000000000000000000000000000000000000000 true 0x)"
+    message_call="$(cast calldata "bridgeMessage(uint32,address,bool,bytes)" "${MESSAGE_NETWORK}" "${DEST}" true "${MESSAGE_METADATA}")"
+    cat <<CALLS
+cast rpc anvil_impersonateAccount "$2" --rpc-url "\${RPC_URL}" >/dev/null
+cast send --unlocked --from "$2" "$1" "execute(address,uint256,bytes)" "${BRIDGE}" "$4" "${asset_call}" --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "$2" "$1" "execute(address,uint256,bytes)" "${BRIDGE}" 0 "${message_call}" --json --rpc-url "\${RPC_URL}"
+CALLS
 }
-write_recovery "${CASE_DIR}/recovery.json" "${vault_wei}"
+write_move() { # <path> <asset destination>
+    # shellcheck disable=SC2016  # ${RPC_URL...} is written literally into move.sh
+    { printf '#!/bin/bash\n# Temporary e2e case (generated by test/e2e/run.sh).\nset -euo pipefail\nRPC_URL="${RPC_URL:-http://127.0.0.1:8545}"\n'
+      bridge_calls "${VAULT}" "${OWNER}" "$2" "${ASSET_WEI}"; } >"$1"
+    chmod +x "$1"
+}
+write_move "${CASE_DIR}/move.sh" "${DEST}"
 
-# Negative: a non-owner cannot withdraw (revert), and nothing moves.
-expect_fail "non-owner withdraw reverts" \
-    cast send --unlocked --from "${ATTACKER}" "${VAULT}" "withdraw(address,uint256)" "${ATTACKER}" 1 --rpc-url "${RPC_URL}"
-[ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "${vault_wei}" ] || fail "vault changed after a failed non-owner withdraw"
+# Negative: a non-owner cannot make the vault call anything (revert), and nothing moves.
+expect_fail "non-owner execute reverts" \
+    cast send --unlocked --from "${ATTACKER}" "${VAULT}" "execute(address,uint256,bytes)" "${ATTACKER}" 1 0x --rpc-url "${RPC_URL}"
+[ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "${vault_wei}" ] || fail "vault changed after a failed non-owner execute"
 
 "${repo_root}/recovery-tx/run.sh" "${CASE_DIR}/move.sh" >"${WORKDIR}/move.out"
-TX_HASH="$(jq -r '.transactionHash // empty' "${WORKDIR}/move.out" 2>/dev/null | tail -n 1)"
-[[ "${TX_HASH}" =~ ^0x[0-9a-fA-F]{64}$ ]] || { cat "${WORKDIR}/move.out" >&2; fail "no tx hash from move.sh"; }
-echo "  tx ${TX_HASH}"
+TX_HASHES="$(jq -r '.transactionHash // empty' "${WORKDIR}/move.out" 2>/dev/null)"
+[ "$(printf '%s\n' "${TX_HASHES}" | grep -cE '^0x[0-9a-fA-F]{64}$')" = "2" ] || { cat "${WORKDIR}/move.out" >&2; fail "expected 2 tx hashes from move.sh"; }
+echo "  txs $(printf '%s ' "${TX_HASHES}" | tr '\n' ' ')"
 
-[ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "0" ] || fail "vault not empty after the move"
-dest_after="$(balance_wei "${DEST}" "${RPC_URL}")"
-[[ "${dest_before}" =~ ^[0-9]{1,19}$ && "${dest_after}" =~ ^[0-9]{1,19}$ ]] || fail "unexpected destination balances"
-[ "$((dest_after - dest_before))" = "${vault_wei}" ] \
-    || fail "destination did not receive ${vault_wei} wei (before ${dest_before}, after ${dest_after})"
-echo "  vault is 0, destination received ${vault_wei} wei"
+[ "$(balance_wei "${VAULT}" "${RPC_URL}")" = "$((vault_wei - ASSET_WEI))" ] || fail "the vault did not lose ${ASSET_WEI} wei"
+[ "$(balance_wei "${BRIDGE}" "${RPC_URL}")" = "${ASSET_WEI}" ] || fail "the bridge did not receive ${ASSET_WEI} wei"
+
+# recovery.json from the BridgeEvents (on this fork). The signatures (step 6) are bound to it and to
+# move.sh, so both are final from here on.
+# shellcheck disable=SC2086  # plain tx hashes
+"${repo_root}/recovery-tx/build-recovery.sh" ${TX_HASHES} >"${CASE_DIR}/recovery.json" 2>"${WORKDIR}/build.out" \
+    || { cat "${WORKDIR}/build.out" >&2; fail "build-recovery.sh failed"; }
+"${repo_root}/recovery-tx/validate-recovery.sh" "${CASE_DIR}/recovery.json" >/dev/null
+cs() { cast to-check-sum-address "$1"; }
+jq -e --arg v "$(cs "${VAULT}")" --arg d "$(cs "${DEST}")" --arg o "$(cs "${OWNER}")" --arg amount "${ASSET_WEI}" \
+    --argjson mn "${MESSAGE_NETWORK}" --arg md "${MESSAGE_METADATA}" '
+    .version == 1 and (.outputs | length) == 2
+    and .outputs[0] == {leaf_type: 0, origin_network: 0, origin_address: "0x0000000000000000000000000000000000000000",
+        destination_network: 0, destination_address: $d, amount: $amount, metadata: "0x", deposit_count: 0,
+        from_address: $v, txn_sender: $o, to_address: $v}
+    and .outputs[1] == {leaf_type: 1, origin_network: 1, origin_address: $v,
+        destination_network: $mn, destination_address: $d, amount: "0", metadata: $md, deposit_count: 1,
+        from_address: $v, txn_sender: $o, to_address: $v}' "${CASE_DIR}/recovery.json" >/dev/null \
+    || { cat "${CASE_DIR}/recovery.json" >&2; fail "unexpected recovery.json"; }
+# recovery.json format checks (offline): each broken file must be refused with its reason.
+bad_recovery() { # <description> <jq filter> <expected message>
+    jq "$2" "${CASE_DIR}/recovery.json" >"${WORKDIR}/bad.json"
+    expect_fail "validate-recovery rejects $1" "${repo_root}/recovery-tx/validate-recovery.sh" "${WORKDIR}/bad.json"
+    grep -qF "$3" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected '$3'"; }
+}
+bad_recovery "another version" '.version = 2' "version: must be 1"
+bad_recovery "no outputs" '.outputs = []' "outputs: required"
+bad_recovery "an unknown top-level field" '.x = 1' "unknown field: x"
+bad_recovery "an unknown output field" '.outputs[0].locked_contract = "0x"' "outputs[0]: unknown field: locked_contract"
+bad_recovery "a missing field" 'del(.outputs[1].deposit_count)' "outputs[1]: missing field: deposit_count"
+bad_recovery "an unknown leaf type" '.outputs[0].leaf_type = 2' "leaf_type: must be 0"
+bad_recovery "a bridgeAsset to another network" '.outputs[0].destination_network = 5' "must be 0 (Ethereum)"
+bad_recovery "a numeric amount" '.outputs[0].amount = 5' "amount: must be an integer"
+bad_recovery "a bad address" '.outputs[0].from_address = "0x12"' "from_address: must be an address"
+bad_recovery "odd-length metadata" '.outputs[1].metadata = "0xabc"' "metadata: must be hex bytes"
+bad_recovery "a network over uint32" '.outputs[1].destination_network = 4294967296' "destination_network: must be a uint32"
+echo "  recovery.json format checks ok"
+echo "  recovery.json: a bridgeAsset of ${ASSET_WEI} wei and a bridgeMessage, both from the vault"
 
 # ---------------------------------------------------------------- 6. sign
-step "6. Sign with the owner and the destination (throwaway keystore)"
+step "6. Sign with the owner (throwaway keystore)"
 mkdir -p "${KS_DIR}"
 # Public anvil test keys only (never real keys).
 cast wallet import owner --private-key "${OWNER_TEST_KEY}" --unsafe-password pw --keystore-dir "${KS_DIR}" >/dev/null
@@ -242,11 +300,13 @@ cast wallet import dest --private-key "${DEST_TEST_KEY}" --unsafe-password pw --
 cast wallet import attacker --private-key "${ATTACKER_TEST_KEY}" --unsafe-password pw --keystore-dir "${KS_DIR}" >/dev/null
 SIGS="${CASE_DIR}/signatures.json"
 
-# Negative: only the destination signed -> the owner (a sender) is missing.
+# Negative: only the destination signed (it is not a sender: an extra, valid signature) -> the owner
+# (a sender) is missing.
 ADDRESS="${DEST}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${SIGS}" \
     --keystore "${KS_DIR}/dest" --password pw >/dev/null
+# shellcheck disable=SC2086  # plain tx hashes
 expect_fail "list-impersonated fails without the owner's signature" \
-    "${repo_root}/recovery-tx/list-impersonated.sh" --signatures "${SIGS}" "${TX_HASH}"
+    "${repo_root}/recovery-tx/list-impersonated.sh" --signatures "${SIGS}" ${TX_HASHES}
 grep -qi "MISSING signature for ${OWNER}" "${WORKDIR}/neg.out" || fail "expected MISSING signature message for the owner"
 
 ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${SIGS}" \
@@ -258,7 +318,8 @@ expect_fail "sign-message rejects --private-key" \
 
 # ---------------------------------------------------------------- 7. verify
 step "7. Verify the signatures"
-"${repo_root}/recovery-tx/list-impersonated.sh" --signatures "${SIGS}" "${TX_HASH}" >"${WORKDIR}/list.out"
+# shellcheck disable=SC2086  # plain tx hashes
+"${repo_root}/recovery-tx/list-impersonated.sh" --signatures "${SIGS}" ${TX_HASHES} >"${WORKDIR}/list.out"
 grep -qi "${OWNER}" "${WORKDIR}/list.out" || fail "owner not listed as impersonated"
 "${repo_root}/ownership-proof/verify-signature.sh" "${SIGS}" >/dev/null
 [ "$(jq 'length' "${SIGS}")" = "2" ] || fail "expected 2 signatures"
@@ -268,12 +329,10 @@ jq '.[0].signature = (.[0].signature[0:-4] + "0000")' "${SIGS}" >"${WORKDIR}/for
 expect_fail "verify-signature rejects a forged signature" \
     "${repo_root}/ownership-proof/verify-signature.sh" "${WORKDIR}/forged.json" "${CASE_DIR}"
 
-# The signed message carries the locked contract, the destination and a hash of recovery.json +
-# move.sh: signatures do not survive a change of either file, nor reuse in another case.
+# The signed message carries a hash of recovery.json + move.sh: signatures do not survive a change
+# of either file, nor reuse in another case.
 grep -q "case hash: $("${repo_root}/ownership-proof/case-hash.sh" "${CASE_DIR}")" "${WORKDIR}/forged.json" \
     || fail "the signed message lacks the case hash"
-grep -q "locked contract: $(cast to-check-sum-address "${VAULT}") — destination: $(cast to-check-sum-address "${DEST}")" "${WORKDIR}/forged.json" \
-    || fail "the signed message lacks the locked contract / destination"
 CASE_CHANGED="${WORKDIR}/case-changed"
 cp -r "${CASE_DIR}" "${CASE_CHANGED}"
 echo "# changed after signing" >>"${CASE_CHANGED}/move.sh"
@@ -285,9 +344,8 @@ grep -q "case hash" "${WORKDIR}/neg.out" || fail "expected the case hash message
 # new entry next to it is refused; a hand-assembled file does not verify.
 CASE_REPLAY="${WORKDIR}/case-replay"
 cp -r "${CASE_DIR}" "${CASE_REPLAY}"
-jq --arg a "${ATTACKER}" '.destination = $a' "${CASE_DIR}/recovery.json" >"${CASE_REPLAY}/recovery.json"
-sed "s/\"withdraw(address,uint256)\" \"${DEST}\"/\"withdraw(address,uint256)\" \"${ATTACKER}\"/" "${CASE_DIR}/move.sh" >"${CASE_REPLAY}/move.sh"
-grep -q "\"${ATTACKER}\" \"${vault_wei}\"" "${CASE_REPLAY}/move.sh" || fail "could not build the replay move.sh"
+jq --arg a "$(cast to-check-sum-address "${ATTACKER}")" '.outputs[0].destination_address = $a' "${CASE_DIR}/recovery.json" >"${CASE_REPLAY}/recovery.json"
+write_move "${CASE_REPLAY}/move.sh" "${ATTACKER}"
 expect_fail "sign-message refuses to add a signature next to ones made for other files" \
     env ADDRESS="${ATTACKER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${CASE_REPLAY}/signatures.json" \
     --keystore "${KS_DIR}/attacker" --password pw
@@ -301,17 +359,16 @@ grep -q "case hash" "${WORKDIR}/neg.out" || fail "expected the case hash message
 
 # ---------------------------------------------------------------- 8. prepare-submission.sh
 step "8. submission/prepare-submission.sh (it starts its own fork each time)"
-# The fork of step 4 is used (the withdraw of step 5 happened on it), so stop it: the scripts
+# The fork of step 4 is used (the bridge calls of step 5 happened on it), so stop it: the scripts
 # start a fresh one from geth on the same port, every run.
 kill "${fork_pid}" 2>/dev/null || true
 docker rm -f "${ANVIL_NAME}" >/dev/null 2>&1 || true
 wait "${fork_pid}" 2>/dev/null || true
 fork_pid=""
 
-write_recovery "${CASE_DIR}/recovery.json" "${vault_wei}"
 OUT_DIR="${WORKDIR}/out"
 # The scripts start the fork themselves with setup/fork.sh: tell it to fork the geth chain.
-fork_env() {
+fork_env() { # BRIDGE_ADDRESS (the mock) is exported above
     L2_RPC_URL="${GETH_URL}" ANVIL_PORT="${ANVIL_PORT}" FORK_BLOCK="${STABLE_BLOCK}" BLOCK_TIME=1 \
         RPC_URL="${RPC_URL}" FORK_LOG="${FORK_LOG}" "$@"
 }
@@ -325,22 +382,30 @@ pkg() { # <case dir> [extra args] — non-interactive (no TTY)
 expect_fail "prepare-submission.sh refuses a non-standard fork without --allow-test-fork" pkg "${CASE_DIR}" --output-dir "${OUT_DIR}"
 grep -q "non-standard fork configuration" "${WORKDIR}/neg.out" || fail "expected the non-standard fork message"
 
-# Negative: declaring more than the vault holds is caught before anything runs.
-write_recovery "${CASE_DIR}/recovery.json" "$((vault_wei))0"
-expect_fail "prepare-submission.sh rejects a recovery.json declaring more than the vault holds" \
-    pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}"
-grep -q "less than the" "${WORKDIR}/neg.out" || fail "expected the 'less than declared' message"
+# Negative: a recovery.json that differs from what move.sh bridges.
+CASE_DIFF="${WORKDIR}/case-diff"
+cp -r "${CASE_DIR}" "${CASE_DIFF}"
+jq '.outputs[0].amount = "1"' "${CASE_DIR}/recovery.json" >"${CASE_DIFF}/recovery.json"
+expect_fail "prepare-submission.sh rejects a recovery.json that differs from what move.sh does" \
+    pkg "${CASE_DIFF}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "does not match what move.sh does" "${WORKDIR}/neg.out" || fail "expected the mismatch message"
 
-# Negative: declaring less than what move.sh moves -> the simulation does not match.
-write_recovery "${CASE_DIR}/recovery.json" "$((vault_wei - 1))"
-expect_fail "prepare-submission.sh rejects a move that differs from recovery.json" \
-    pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}"
-grep -q "does not match recovery.json" "${WORKDIR}/neg.out" || fail "expected the mismatch message"
+# Positive (up to the signatures): with no recovery.json, the run writes it from move.sh — the same
+# outputs build-recovery.sh gave in step 5 — then stops because nobody signed for these files yet.
+CASE_GEN="${WORKDIR}/case-gen"
+cp -r "${CASE_DIR}" "${CASE_GEN}"
+rm "${CASE_GEN}/recovery.json"
+echo '[]' >"${CASE_GEN}/signatures.json"
+expect_fail "prepare-submission.sh writes recovery.json, then asks for the signatures" \
+    pkg "${CASE_GEN}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -qi "ADDRESS=${OWNER} NONCE=" "${WORKDIR}/neg.out" || fail "expected the sign-message command for the owner"
+[ "$(jq -S . "${CASE_GEN}/recovery.json")" = "$(jq -S . "${CASE_DIR}/recovery.json")" ] \
+    || { cat "${CASE_GEN}/recovery.json" >&2; fail "the generated recovery.json differs from build-recovery.sh's"; }
+echo "  recovery.json generated from move.sh"
 
 # Negative: no signature for the owner (a sender) -> asks for it and fails without a TTY.
 CASE_UNSIGNED="${WORKDIR}/case-unsigned"
 cp -r "${CASE_DIR}" "${CASE_UNSIGNED}"
-write_recovery "${CASE_UNSIGNED}/recovery.json" "${vault_wei}"
 jq --arg owner "${OWNER}" '[.[] | select((.address | ascii_downcase) != ($owner | ascii_downcase))]' "${SIGS}" >"${CASE_UNSIGNED}/signatures.json"
 expect_fail "prepare-submission.sh fails when the owner has not signed" pkg "${CASE_UNSIGNED}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -qi "ADDRESS=${OWNER} NONCE=${NONCE}" "${WORKDIR}/neg.out" || fail "expected the sign-message command for the owner"
@@ -348,36 +413,57 @@ grep -qi "ADDRESS=${OWNER} NONCE=${NONCE}" "${WORKDIR}/neg.out" || fail "expecte
 # Negative: a file changed after signing -> the signatures no longer verify.
 CASE_EDITED="${WORKDIR}/case-edited"
 cp -r "${CASE_DIR}" "${CASE_EDITED}"
-write_recovery "${CASE_EDITED}/recovery.json" "${vault_wei}"
 echo "# edited after signing" >>"${CASE_EDITED}/move.sh"
 expect_fail "prepare-submission.sh fails when move.sh changed after signing" \
     pkg "${CASE_EDITED}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -q "case hash" "${WORKDIR}/neg.out" || fail "expected the case hash message"
 
-# Negative: a move.sh that sends the funds FROM the locked contract itself (impersonating it, with
-# no EOA signing anything) is refused.
-CASE_FROMVAULT="${WORKDIR}/case-fromvault"
-cp -r "${CASE_DIR}" "${CASE_FROMVAULT}"
-write_recovery "${CASE_FROMVAULT}/recovery.json" "${vault_wei}"
-cat >"${CASE_FROMVAULT}/move.sh" <<FROMVAULT
+# Negative: a bridgeAsset to another network than Ethereum (0).
+CASE_NET="${WORKDIR}/case-net"
+cp -r "${CASE_DIR}" "${CASE_NET}"
+net_call="$(cast calldata "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 5 "${DEST}" 1 0x0000000000000000000000000000000000000000 true 0x)"
+cat >"${CASE_NET}/move.sh" <<NET
 #!/bin/bash
 set -euo pipefail
-cast send --unlocked --from "${VAULT}" "${DEST}" --value "${vault_wei}" --json --rpc-url "\${RPC_URL}"
-FROMVAULT
-expect_fail "prepare-submission.sh refuses a move.sh that sends from the locked contract itself" \
-    pkg "${CASE_FROMVAULT}" --allow-test-fork --output-dir "${OUT_DIR}"
-grep -q "FROM the locked contract" "${WORKDIR}/neg.out" || fail "expected the 'from the locked contract' message"
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${BRIDGE}" 1 "${net_call}" --json --rpc-url "\${RPC_URL}"
+NET
+expect_fail "prepare-submission.sh refuses a bridgeAsset to network 5" \
+    pkg "${CASE_NET}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "to network 5" "${WORKDIR}/neg.out" || fail "expected the destination-network message"
+
+# Negative: a BridgeEvent the bridge did not back with funds (the mock's fakeBridgeEvent emits an
+# ETH bridgeAsset without taking ETH): the balance check must catch it.
+CASE_FAKE="${WORKDIR}/case-fake"
+cp -r "${CASE_DIR}" "${CASE_FAKE}"
+rm "${CASE_FAKE}/recovery.json"
+cat >"${CASE_FAKE}/move.sh" <<FAKE
+#!/bin/bash
+set -euo pipefail
+cast send --unlocked --from "${OWNER}" "${BRIDGE}" "fakeBridgeEvent(address,uint256)" "${DEST}" 5 --json --rpc-url "\${RPC_URL}"
+FAKE
+expect_fail "prepare-submission.sh refuses BridgeEvents the bridge did not back with funds" \
+    pkg "${CASE_FAKE}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "the balances do not match" "${WORKDIR}/neg.out" || fail "expected the balance mismatch message"
+[ ! -f "${CASE_FAKE}/recovery.json" ] || fail "recovery.json must not be written when the balances do not match"
+
+# Negative: a move.sh that does not call the bridge at all.
+CASE_NOBRIDGE="${WORKDIR}/case-nobridge"
+cp -r "${CASE_DIR}" "${CASE_NOBRIDGE}"
+cat >"${CASE_NOBRIDGE}/move.sh" <<NOBRIDGE
+#!/bin/bash
+set -euo pipefail
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${DEST}" 1 0x --json --rpc-url "\${RPC_URL}"
+NOBRIDGE
+expect_fail "prepare-submission.sh refuses a move.sh that does not call the bridge" \
+    pkg "${CASE_NOBRIDGE}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "calls the bridge" "${WORKDIR}/neg.out" || fail "expected the no-bridge message"
 
 # Negative: evm_mine with a timestamp (a time warp) is refused by the sandbox's RPC allowlist.
 CASE_WARP="${WORKDIR}/case-warp"
 cp -r "${CASE_DIR}" "${CASE_WARP}"
-write_recovery "${CASE_WARP}/recovery.json" "${vault_wei}"
-cat >"${CASE_WARP}/move.sh" <<WARP
-#!/bin/bash
-set -euo pipefail
-cast rpc evm_mine '{"timestamp": 4102444800}' --rpc-url "\${RPC_URL}" >/dev/null
-cast send --unlocked --from "${OWNER}" "${VAULT}" "withdraw(address,uint256)" "${DEST}" "${vault_wei}" --json --rpc-url "\${RPC_URL}"
-WARP
+{ printf '#!/bin/bash\nset -euo pipefail\n'
+  echo "cast rpc evm_mine '{\"timestamp\": 4102444800}' --rpc-url \"\${RPC_URL}\" >/dev/null"
+  bridge_calls "${VAULT}" "${OWNER}" "${DEST}" "${ASSET_WEI}"; } >"${CASE_WARP}/move.sh"
 expect_fail "prepare-submission.sh refuses a move.sh that warps the clock with evm_mine" \
     pkg "${CASE_WARP}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -q "evm_mine with parameters" "${WORKDIR}/neg.out" || fail "expected the evm_mine-with-parameters message"
@@ -386,7 +472,6 @@ grep -q "evm_mine with parameters" "${WORKDIR}/neg.out" || fail "expected the ev
 # collected (the pool is flushed before the scan), so its sender is required to sign.
 CASE_PENDING="${WORKDIR}/case-pending"
 cp -r "${CASE_DIR}" "${CASE_PENDING}"
-write_recovery "${CASE_PENDING}/recovery.json" "${vault_wei}"
 cat >>"${CASE_PENDING}/move.sh" <<PENDING
 cast send --async --unlocked --from "${ATTACKER}" "${ATTACKER}" --value 1 --rpc-url "\${RPC_URL}" >&2
 PENDING
@@ -398,7 +483,6 @@ grep -qi "${ATTACKER}" "${WORKDIR}/neg.out" || fail "expected the pending tx's s
 # transactions must be refused by the sandbox's RPC allowlist.
 CASE_FORGE="${WORKDIR}/case-forge"
 cp -r "${CASE_DIR}" "${CASE_FORGE}"
-write_recovery "${CASE_FORGE}/recovery.json" "${vault_wei}"
 cat >"${CASE_FORGE}/move.sh" <<FORGE
 #!/bin/bash
 set -euo pipefail
@@ -410,8 +494,75 @@ expect_fail "prepare-submission.sh refuses a move.sh that edits the state with a
     pkg "${CASE_FORGE}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -q "not allowed in the sandbox" "${WORKDIR}/neg.out" || fail "expected the sandbox RPC allowlist to refuse anvil_setBalance"
 
+# Positive: the vault withdraws to the owner (an EOA), which then calls the bridge itself. The
+# first run writes recovery.json and asks for the owner's signature; signed, it packages.
+CASE_EOA="${WORKDIR}/case-eoa"
+cp -r "${CASE_DIR}" "${CASE_EOA}"
+rm "${CASE_EOA}/recovery.json"
+echo '[]' >"${CASE_EOA}/signatures.json"
+cat >"${CASE_EOA}/move.sh" <<EOABRIDGE
+#!/bin/bash
+set -euo pipefail
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${OWNER}" 1000000000000000000 0x --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "${OWNER}" "${BRIDGE}" "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "${DEST}" 1000000000000000000 0x0000000000000000000000000000000000000000 true 0x --value 1000000000000000000 --json --rpc-url "\${RPC_URL}"
+EOABRIDGE
+expect_fail "prepare-submission.sh writes recovery.json for the EOA path, then asks for the owner's signature" \
+    pkg "${CASE_EOA}" --allow-test-fork --output-dir "${WORKDIR}/out-eoa"
+ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${CASE_EOA}/signatures.json" \
+    --keystore "${KS_DIR}/owner" --password pw >/dev/null
+pkg "${CASE_EOA}" --allow-test-fork --output-dir "${WORKDIR}/out-eoa" >"${WORKDIR}/package-eoa.out" \
+    || { cat "${WORKDIR}/package-eoa.out" >&2; fail "packaging the EOA-path case failed"; }
+jq -e --arg o "$(cs "${OWNER}")" --arg b "$(cs "${BRIDGE}")" '(.outputs | length) == 1
+    and .outputs[0].from_address == $o and .outputs[0].txn_sender == $o and .outputs[0].to_address == $b' \
+    "${CASE_EOA}/recovery.json" >/dev/null || { cat "${CASE_EOA}/recovery.json" >&2; fail "unexpected recovery.json for the EOA path"; }
+echo "  package ok with the bridge called by an EOA (the vault withdrew to it first)"
+
+# Positive: tokens and a bridgeMessage carrying ETH. The vault approves and bridges 300 of the native
+# token (locked in the bridge), bridges 200 of the wrapped token (burned) and sends a message with
+# 7 wei. The balance check covers the three kinds: bridge ETH balance, bridge token balance, supply.
+CASE_TOKENS="${WORKDIR}/case-tokens"
+cp -r "${CASE_DIR}" "${CASE_TOKENS}"
+rm "${CASE_TOKENS}/recovery.json"
+echo '[]' >"${CASE_TOKENS}/signatures.json"
+approve_call="$(cast calldata "approve(address,uint256)" "${BRIDGE}" 300)"
+native_call="$(cast calldata "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "${DEST}" 300 "${NATIVE_TOKEN}" true 0x)"
+wrapped_call="$(cast calldata "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "${DEST}" 200 "${WRAPPED_TOKEN}" true 0x)"
+msg_call="$(cast calldata "bridgeMessage(uint32,address,bool,bytes)" "${MESSAGE_NETWORK}" "${DEST}" true 0x)"
+cat >"${CASE_TOKENS}/move.sh" <<TOKENS
+#!/bin/bash
+set -euo pipefail
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${NATIVE_TOKEN}" 0 "${approve_call}" --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${BRIDGE}" 0 "${native_call}" --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${BRIDGE}" 0 "${wrapped_call}" --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${BRIDGE}" 7 "${msg_call}" --json --rpc-url "\${RPC_URL}"
+TOKENS
+expect_fail "prepare-submission.sh writes recovery.json for the token case, then asks for the owner's signature" \
+    pkg "${CASE_TOKENS}" --allow-test-fork --output-dir "${WORKDIR}/out-tokens"
+ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${CASE_TOKENS}/signatures.json" \
+    --keystore "${KS_DIR}/owner" --password pw >/dev/null
+pkg "${CASE_TOKENS}" --allow-test-fork --output-dir "${WORKDIR}/out-tokens" >"${WORKDIR}/package-tokens.out" \
+    || { cat "${WORKDIR}/package-tokens.out" >&2; fail "packaging the token case failed"; }
+jq -e --arg n "$(cs "${NATIVE_TOKEN}")" --arg l1 "$(cs "${L1_TOKEN}")" --arg v "$(cs "${VAULT}")" '(.outputs | length) == 3
+    and (.outputs[0] | .leaf_type == 0 and .origin_network == 1 and .origin_address == $n and .amount == "300")
+    and (.outputs[1] | .leaf_type == 0 and .origin_network == 0 and .origin_address == $l1 and .amount == "200")
+    and (.outputs[2] | .leaf_type == 1 and .origin_address == $v and .amount == "7" and .metadata == "0x")' \
+    "${CASE_TOKENS}/recovery.json" >/dev/null || { cat "${CASE_TOKENS}/recovery.json" >&2; fail "unexpected recovery.json for the token case"; }
+mkdir -p "${WORKDIR}/unpacked-tokens"
+tar -xzf "${WORKDIR}"/out-tokens/case-tokens-*.tgz -C "${WORKDIR}/unpacked-tokens"
+jq -e --arg n "$(printf '%s' "${NATIVE_TOKEN}" | tr '[:upper:]' '[:lower:]')" --arg w "$(printf '%s' "${WRAPPED_TOKEN}" | tr '[:upper:]' '[:lower:]')" '
+    (.balances | length) == 3
+    and any(.balances[]; .token.origin_network == 0 and .token.origin_address == "0x0000000000000000000000000000000000000000"
+        and .measured == "bridge_balance" and .bridged == "7")
+    and any(.balances[]; .token.origin_network == 1 and .measured == "bridge_balance" and .address == $n
+        and .bridged == "300" and ((.after | tonumber) - (.before | tonumber)) == 300)
+    and any(.balances[]; .token.origin_network == 0 and .measured == "total_supply" and .address == $w
+        and .bridged == "200" and ((.before | tonumber) - (.after | tonumber)) == 200)' \
+    "${WORKDIR}/unpacked-tokens/case-tokens/manifest.json" >/dev/null \
+    || { jq '.balances' "${WORKDIR}/unpacked-tokens/case-tokens/manifest.json" >&2; fail "unexpected balances for the token case"; }
+PKG_TOKENS="$(ls "${WORKDIR}"/out-tokens/case-tokens-*.tgz)"
+echo "  package ok with a native token, a wrapped token and a bridgeMessage carrying ETH"
+
 # Positive: everything signed -> a package.
-write_recovery "${CASE_DIR}/recovery.json" "${vault_wei}"
 pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}" >"${WORKDIR}/package.out"
 PKG="$(ls "${OUT_DIR}"/case-*.tgz)"
 mkdir -p "${WORKDIR}/unpacked"
@@ -420,11 +571,13 @@ PKG_DIR="${WORKDIR}/unpacked/case"
 for f in manifest.json recovery.json move.sh signatures.json fork.log run.log; do
     [ -f "${PKG_DIR}/${f}" ] || fail "package lacks ${f}"
 done
-jq -e --arg nonce "${NONCE}" --arg dest "${DEST}" --arg locked "${VAULT}" --arg amount "${vault_wei}" '
-    .test_fork == true and .nonce == $nonce and (.tx_hashes | length) == 1
-    and (.required_signers | length) == 2 and .contract_senders == []
-    and (.destination | ascii_downcase) == ($dest | ascii_downcase)
-    and .balances[0].amount == $amount and .balances[0].locked_after == "0"' "${PKG_DIR}/manifest.json" >/dev/null \
+jq -e --arg nonce "${NONCE}" --arg owner "${OWNER}" --argjson outputs "$(jq -c '.outputs' "${CASE_DIR}/recovery.json")" '
+    .test_fork == true and .nonce == $nonce and (.tx_hashes | length) == 2
+    and .required_signers == [$owner | ascii_downcase] and .contract_senders == []
+    and .outputs == $outputs
+    and .balances == [{token: {origin_network: 0, origin_address: "0x0000000000000000000000000000000000000000"},
+        measured: "bridge_balance", address: (.balances[0].address), before: "0", after: "'"${ASSET_WEI}"'",
+        bridged: "'"${ASSET_WEI}"'"}]' "${PKG_DIR}/manifest.json" >/dev/null \
     || { cat "${PKG_DIR}/manifest.json" >&2; fail "unexpected manifest.json"; }
 # The hashes in the manifest match the packaged files.
 for f in recovery.json move.sh signatures.json fork.log run.log; do
@@ -443,45 +596,22 @@ expect_fail "prepare-submission.sh refuses to run while something answers on the
 grep -q "something already answers" "${WORKDIR}/neg.out" || fail "expected the 'already answers' message"
 docker rm -f "${ANVIL_NAME}" >/dev/null 2>&1
 
-# Positive: the destination is also the sender (the owner withdraws to itself). Gas is free on the
-# fork, so its balance gains exactly the amount and no gas is paid (the check still adds any gas back).
-CASE_SELF="${WORKDIR}/case-self"
-cp -r "${CASE_DIR}" "${CASE_SELF}"
-sed "s/\"withdraw(address,uint256)\" \"${DEST}\"/\"withdraw(address,uint256)\" \"${OWNER}\"/" "${CASE_DIR}/move.sh" >"${CASE_SELF}/move.sh"
-grep -q "\"${OWNER}\" \"${vault_wei}\"" "${CASE_SELF}/move.sh" || fail "could not build the self-withdraw move.sh"
-jq -n --arg locked "${VAULT}" --arg dest "${OWNER}" --arg amount "${vault_wei}" \
-    '{locked_contract: $locked, destination: $dest, funds: [{token: "native", amount: $amount}]}' >"${CASE_SELF}/recovery.json"
-echo '[]' >"${CASE_SELF}/signatures.json"
-ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${CASE_SELF}/signatures.json" \
-    --keystore "${KS_DIR}/owner" --password pw >/dev/null
-pkg "${CASE_SELF}" --allow-test-fork --output-dir "${WORKDIR}/out-self" >"${WORKDIR}/package-self.out"
-tar -xzf "${WORKDIR}"/out-self/case-self-*.tgz -C "${WORKDIR}/unpacked"
-jq -e '(.required_signers | length) == 1 and (.balances[0].destination_gas_paid | tonumber) == 0' \
-    "${WORKDIR}/unpacked/case-self/manifest.json" >/dev/null || fail "unexpected manifest for the self-withdraw case"
-echo "  package ok with destination == sender (gas is free on the fork)"
-
-# Positive, with a manual review: the funds of VAULT2 are moved by impersonating the CONTRACT that
-# owns it. Only the destination signs (a contract cannot), and the verifier must not say a plain
-# VERIFIED: exit code 3, "MANUAL REVIEW REQUIRED".
+# Positive, with a manual review: VAULT2 bridges its funds, driven by impersonating the CONTRACT that
+# owns it. Nobody signs (a contract cannot), and the verifier must not say a plain VERIFIED: exit
+# code 3, "MANUAL REVIEW REQUIRED". The run writes recovery.json first, then packages (no EOA to sign).
 CASE_CTRL="${WORKDIR}/case-ctrl"
 cp -r "${CASE_DIR}" "${CASE_CTRL}"
-jq -n --arg locked "${VAULT2}" --arg dest "${DEST}" --arg amount "${vault2_wei}" \
-    '{locked_contract: $locked, destination: $dest, funds: [{token: "native", amount: $amount}]}' >"${CASE_CTRL}/recovery.json"
-cat >"${CASE_CTRL}/move.sh" <<CTRL
-#!/bin/bash
-set -euo pipefail
-cast rpc anvil_impersonateAccount "${CONTROLLER}" --rpc-url "\${RPC_URL}" >/dev/null
-cast send --unlocked --from "${CONTROLLER}" "${VAULT2}" "withdraw(address,uint256)" "${DEST}" "${vault2_wei}" --json --rpc-url "\${RPC_URL}"
-CTRL
+rm "${CASE_CTRL}/recovery.json"
+{ printf '#!/bin/bash\nset -euo pipefail\n'; bridge_calls "${VAULT2}" "${CONTROLLER}" "${DEST}" "${vault2_wei}"; } >"${CASE_CTRL}/move.sh"
 echo '[]' >"${CASE_CTRL}/signatures.json"
-ADDRESS="${DEST}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${CASE_CTRL}/signatures.json" \
-    --keystore "${KS_DIR}/dest" --password pw >/dev/null
-pkg "${CASE_CTRL}" --allow-test-fork --output-dir "${WORKDIR}/out-ctrl" >"${WORKDIR}/package-ctrl.out"
+pkg "${CASE_CTRL}" --allow-test-fork --output-dir "${WORKDIR}/out-ctrl" >"${WORKDIR}/package-ctrl.out" \
+    || { cat "${WORKDIR}/package-ctrl.out" >&2; fail "packaging the contract-sender case failed"; }
 PKG_CTRL="$(ls "${WORKDIR}"/out-ctrl/case-ctrl-*.tgz)"
 tar -xzf "${PKG_CTRL}" -C "${WORKDIR}/unpacked"
-jq -e --arg c "${CONTROLLER}" '(.contract_senders | length) == 1 and ((.contract_senders[0] | ascii_downcase) == ($c | ascii_downcase)) and (.required_signers | length) == 1' \
+jq -e --arg c "${CONTROLLER}" --arg v "${VAULT2}" '(.contract_senders | length) == 1 and ((.contract_senders[0] | ascii_downcase) == ($c | ascii_downcase))
+    and .required_signers == [] and ([.outputs[].from_address | ascii_downcase] | unique) == [$v | ascii_downcase]' \
     "${WORKDIR}/unpacked/case-ctrl/manifest.json" >/dev/null || fail "unexpected manifest for the contract-sender case"
-echo "  package ok with a contract sender (only the destination signs)"
+echo "  package ok with a contract sender (nobody signs)"
 
 # ---------------------------------------------------------------- 9. verify-submission.sh
 step "9. submission/verify-submission.sh on the package"
@@ -495,6 +625,17 @@ grep -q "TEST fork" "${WORKDIR}/neg.out" || fail "expected the test-fork message
 verify "${PKG}" --allow-test-fork >"${WORKDIR}/verify.out" || { cat "${WORKDIR}/verify.out" >&2; fail "verification of a good package failed"; }
 grep -q "^VERIFIED:" "${WORKDIR}/verify.out" || fail "expected VERIFIED"
 echo "  verified: $(basename "${PKG}")"
+verify "${PKG_TOKENS}" --allow-test-fork >"${WORKDIR}/verify-tokens.out" || { cat "${WORKDIR}/verify-tokens.out" >&2; fail "verification of the token package failed"; }
+grep -q "^VERIFIED:" "${WORKDIR}/verify-tokens.out" || fail "expected VERIFIED for the token package"
+echo "  verified: $(basename "${PKG_TOKENS}")"
+# Negative: a manifest whose balances lie (hashes fine) does not match a fresh run.
+mkdir -p "${WORKDIR}/tamper-bal"
+tar -xzf "${PKG_TOKENS}" -C "${WORKDIR}/tamper-bal"
+tok_dir="$(ls -d "${WORKDIR}"/tamper-bal/case-tokens)"
+jq '.balances[0].after = "1"' "${tok_dir}/manifest.json" >"${WORKDIR}/m.json" && mv "${WORKDIR}/m.json" "${tok_dir}/manifest.json"
+tar -czf "${WORKDIR}/tamper-bal.tgz" -C "${WORKDIR}/tamper-bal" case-tokens
+expect_fail "verify-submission rejects a manifest whose balances differ from a fresh run" verify "${WORKDIR}/tamper-bal.tgz" --allow-test-fork
+grep -q "FAIL balances" "${WORKDIR}/neg.out" || fail "expected the balances mismatch"
 
 # A package whose funds are moved by a contract sender is not a plain VERIFIED: exit code 3.
 set +e
@@ -511,7 +652,7 @@ echo "  contract sender: automatic checks pass, manual review required (exit 3)"
 TAMPER="${WORKDIR}/tamper"
 mkdir -p "${TAMPER}/a" "${TAMPER}/b" "${TAMPER}/c"
 tar -xzf "${PKG}" -C "${TAMPER}/a"
-sed -i.bak "s/${vault_wei}/1${vault_wei}/" "${TAMPER}/a/case/recovery.json"
+sed -i.bak "s/${ASSET_WEI}/1${ASSET_WEI}/" "${TAMPER}/a/case/recovery.json"
 rm -f "${TAMPER}/a/case/recovery.json.bak"
 tar -czf "${TAMPER}/hash.tgz" -C "${TAMPER}/a" case
 expect_fail "verify-submission rejects a file that differs from the manifest" verify "${TAMPER}/hash.tgz" --allow-test-fork
