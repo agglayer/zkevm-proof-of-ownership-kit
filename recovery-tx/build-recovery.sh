@@ -1,9 +1,9 @@
 #!/bin/bash
 # Builds a case's recovery.json from the transactions move.sh mined on the shadow-fork: one
 # output per BridgeEvent that the zkEVM bridge emitted in them, in order. Each output is a
-# bridge exit Polygon recovers through the certificate, with the fields (and names) aggkit's
-# bridgesync stores for a BridgeEvent, minus the ones that change from run to run (block_num,
-# block_pos, block_timestamp, tx_hash):
+# bridge exit Polygon recovers through the certificate, with the BridgeEvent's fields (named as
+# aggkit's bridgesync names them) and, under extra_data, what bridgesync adds from the transaction
+# (minus the fields that change from run to run: block_num, block_pos, block_timestamp, tx_hash):
 #   leaf_type            0 bridgeAsset, 1 bridgeMessage
 #   origin_network, origin_address            the token (bridgeAsset; ETH is 0 / 0x0...0) or the
 #                                             sender of the message (bridgeMessage)
@@ -11,9 +11,11 @@
 #   amount               base units, as a string (ETH carried, for a bridgeMessage)
 #   metadata             hex, as emitted (not decoded)
 #   deposit_count        the bridge's deposit counter
-#   from_address         the address that called the bridge (read from the call trace,
-#                        debug_traceTransaction; the event does not carry it)
-#   txn_sender, to_address  the transaction's from and to
+#   extra_data           not in the event:
+#     from_address       the address that called the bridge (msg.sender of bridgeAsset /
+#                        bridgeMessage, read from the call trace, debug_traceTransaction)
+#     txn_sender         the transaction's from (the impersonated address that sent it)
+#     to_address         the transaction's to (the contract it called first)
 #
 # The result goes to stdout ({"version": 1, "outputs": [...]}); messages go to stderr.
 # submission/helpers/generate.sh runs this script on a fresh fork.
@@ -130,7 +132,7 @@ for tx in "$@"; do
             --arg sender "$(cast to-check-sum-address "${txn_sender}")" --arg to "$(cast to-check-sum-address "${to_address}")" \
             '{leaf_type: $lt, origin_network: $on, origin_address: $oa, destination_network: $dn,
               destination_address: $da, amount: $amount, metadata: $md, deposit_count: $dc,
-              from_address: $from, txn_sender: $sender, to_address: $to}')"
+              extra_data: {from_address: $from, txn_sender: $sender, to_address: $to}}')"
         outputs="$(jq -c --argjson o "${output}" '. + [$o]' <<<"${outputs}")"
     done <<<"${receipt_data}"
 done

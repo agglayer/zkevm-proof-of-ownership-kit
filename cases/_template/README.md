@@ -70,9 +70,11 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
       "amount": "1000000000000000000",
       "metadata": "0x",
       "deposit_count": 123456,
-      "from_address": "0x...",
-      "txn_sender": "0x...",
-      "to_address": "0x..."
+      "extra_data": {
+        "from_address": "0x...",
+        "txn_sender": "0x...",
+        "to_address": "0x..."
+      }
     },
     {
       "leaf_type": 1,
@@ -83,9 +85,11 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
       "amount": "0",
       "metadata": "0x...",
       "deposit_count": 123457,
-      "from_address": "0x...",
-      "txn_sender": "0x...",
-      "to_address": "0x..."
+      "extra_data": {
+        "from_address": "0x...",
+        "txn_sender": "0x...",
+        "to_address": "0x..."
+      }
     }
   ]
 }
@@ -101,8 +105,9 @@ The fields are the ones of the bridge's `BridgeEvent`, with the names aggkit use
 - `amount` — in base units (wei for ETH), as a string; for a `bridgeMessage`, the ETH it carries.
 - `metadata` — as emitted, not decoded (the message bytes of a `bridgeMessage`).
 - `deposit_count` — the bridge's deposit counter for this call.
-- `from_address` — who called the bridge; `txn_sender` and `to_address` — the transaction's sender
-  and target.
+- `extra_data` — what is not in the `BridgeEvent`: `from_address`, who called the bridge
+  (`msg.sender` of `bridgeAsset` / `bridgeMessage`); `txn_sender`, the transaction's sender (the
+  impersonated address); `to_address`, the contract the transaction called.
 
 **Check it**: it is what you recover, and what you sign. If it is not what you want, fix `move.sh`,
 delete `recovery.json` and run the command again. Without a fork at hand, check the file's format
