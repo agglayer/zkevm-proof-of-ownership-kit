@@ -97,8 +97,7 @@ plain and step-by-step.
   `prepare-submission.sh` generates it from `move.sh` — `{version: 1, outputs: [...]}`, each output
   `leaf_type` (0 bridgeAsset, 1 bridgeMessage), `origin_network`, `origin_address`,
   `destination_network` (0 for bridgeAsset), `destination_address`, `amount` (string), `metadata`
-  (hex, not decoded), `deposit_count`, and `extra_data` (not in the event): `from_address`,
-  `txn_sender`, `to_address`.
+  (hex, not decoded), `deposit_count`, and `extra_data` (not in the event): `from_address`.
 - `submission/` — `prepare-submission.sh` is the one script stakeholders run: it pre-checks the case
   (`move.sh` present and without template placeholders, `recovery.json` valid if present), runs
   `helpers/generate.sh`, packs its output with `helpers/package.sh` and prints where to send the

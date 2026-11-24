@@ -197,8 +197,7 @@ the last step does it.
    [...]}`, one output per bridge call with the `BridgeEvent` fields as aggkit names them (`leaf_type`: `0`
    bridgeAsset, `1` bridgeMessage; `origin_network`, `origin_address`, `destination_network`,
    `destination_address`, `amount`, `metadata`, `deposit_count`) plus, under `extra_data`, what the
-   event does not carry: `from_address` (who called the bridge), `txn_sender` and `to_address` (the
-   transaction's from and to). **Check it**: it is what you
+   event does not carry: `from_address` (who called the bridge). **Check it**: it is what you
    recover. To change it, change `move.sh`, delete `recovery.json` and run again.
 
 4. **Fill in `signatures.json`.** Once `recovery.json` and `move.sh` are **final** (the signed message

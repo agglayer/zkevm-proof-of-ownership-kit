@@ -16,7 +16,7 @@
 #       "amount": "<base units, as a string>", "metadata": "0x<hex bytes>",
 #       "deposit_count": <uint32>,
 #       "extra_data": { (not in the BridgeEvent)
-#         "from_address": "0x..." (the bridge caller), "txn_sender": "0x...", "to_address": "0x..." } }
+#         "from_address": "0x..." (the bridge caller) } }
 #
 # Requires: jq.
 #
@@ -48,7 +48,7 @@ errors="$(jq -r '
   def uint32: type == "number" and . == floor and . >= 0 and . <= 4294967295;
   ["leaf_type", "origin_network", "origin_address", "destination_network", "destination_address",
    "amount", "metadata", "deposit_count", "extra_data"] as $fields
-  | ["from_address", "txn_sender", "to_address"] as $extra
+  | ["from_address"] as $extra
   | . as $r
   | if type != "object" then "the top level must be a JSON object"
     else

@@ -2,8 +2,8 @@
 # Builds a case's recovery.json from the transactions move.sh mined on the shadow-fork: one
 # output per BridgeEvent that the zkEVM bridge emitted in them, in order. Each output is a
 # bridge exit Polygon recovers through the certificate, with the BridgeEvent's fields (named as
-# aggkit's bridgesync names them) and, under extra_data, what bridgesync adds from the transaction
-# (minus the fields that change from run to run: block_num, block_pos, block_timestamp, tx_hash):
+# aggkit's bridgesync names them) and, under extra_data, the bridge caller, which the event does
+# not carry:
 #   leaf_type            0 bridgeAsset, 1 bridgeMessage
 #   origin_network, origin_address            the token (bridgeAsset; ETH is 0 / 0x0...0) or the
 #                                             sender of the message (bridgeMessage)
@@ -14,8 +14,6 @@
 #   extra_data           not in the event:
 #     from_address       the address that called the bridge (msg.sender of bridgeAsset /
 #                        bridgeMessage, read from the call trace, debug_traceTransaction)
-#     txn_sender         the transaction's from (the impersonated address that sent it)
-#     to_address         the transaction's to (the contract it called first)
 #
 # The result goes to stdout ({"version": 1, "outputs": [...]}); messages go to stderr.
 # submission/helpers/generate.sh runs this script on a fresh fork.
@@ -76,8 +74,6 @@ outputs="[]"
 for tx in "$@"; do
     [[ "${tx}" =~ ^0x[0-9a-fA-F]{64}$ ]] || die "'${tx}' is not a transaction hash."
     receipt="$(cast receipt "${tx}" --json --rpc-url "${RPC_URL}")" || die "could not read the receipt of ${tx} from ${RPC_URL}."
-    txn_sender="$(jq -r '.from // ""' <<<"${receipt}")"
-    to_address="$(jq -r '.to // ""' <<<"${receipt}")"
     receipt_data="$(jq -r --arg bridge "${bridge}" --arg topic "${bridge_topic}" \
         '.logs[] | select((.address | ascii_downcase) == $bridge and ((.topics[0] // "") | ascii_downcase) == $topic) | .data | ascii_downcase' <<<"${receipt}")"
     [ -n "${receipt_data}" ] || continue
@@ -107,7 +103,7 @@ for tx in "$@"; do
         for v in "${leaf_type}" "${origin_network}" "${destination_network}" "${amount}" "${deposit_count}"; do
             [[ "${v}" =~ ^[0-9]+$ ]] || die "unexpected value in a BridgeEvent of ${tx}: ${v}"
         done
-        for v in "${origin_address}" "${destination_address}" "${txn_sender}" "${to_address}"; do
+        for v in "${origin_address}" "${destination_address}"; do
             [[ "${v}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "unexpected address in a BridgeEvent of ${tx}: ${v}"
         done
         [[ "${metadata}" =~ ^0x([0-9a-fA-F]{2})*$ ]] || die "unexpected metadata in a BridgeEvent of ${tx}: ${metadata}"
@@ -129,10 +125,9 @@ for tx in "$@"; do
             --argjson dn "${destination_network}" --arg da "$(cast to-check-sum-address "${destination_address}")" \
             --arg amount "${amount}" --arg md "${metadata}" --argjson dc "${deposit_count}" \
             --arg from "$(cast to-check-sum-address "${caller}")" \
-            --arg sender "$(cast to-check-sum-address "${txn_sender}")" --arg to "$(cast to-check-sum-address "${to_address}")" \
             '{leaf_type: $lt, origin_network: $on, origin_address: $oa, destination_network: $dn,
               destination_address: $da, amount: $amount, metadata: $md, deposit_count: $dc,
-              extra_data: {from_address: $from, txn_sender: $sender, to_address: $to}}')"
+              extra_data: {from_address: $from}}')"
         outputs="$(jq -c --argjson o "${output}" '. + [$o]' <<<"${outputs}")"
     done <<<"${receipt_data}"
 done

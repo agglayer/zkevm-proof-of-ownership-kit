@@ -261,15 +261,15 @@ echo "  txs $(printf '%s ' "${TX_HASHES}" | tr '\n' ' ')"
     || { cat "${WORKDIR}/build.out" >&2; fail "build-recovery.sh failed"; }
 "${repo_root}/recovery-tx/validate-recovery.sh" "${CASE_DIR}/recovery.json" >/dev/null
 cs() { cast to-check-sum-address "$1"; }
-jq -e --arg v "$(cs "${VAULT}")" --arg d "$(cs "${DEST}")" --arg o "$(cs "${OWNER}")" --arg amount "${ASSET_WEI}" \
+jq -e --arg v "$(cs "${VAULT}")" --arg d "$(cs "${DEST}")" --arg amount "${ASSET_WEI}" \
     --argjson mn "${MESSAGE_NETWORK}" --arg md "${MESSAGE_METADATA}" '
     .version == 1 and (.outputs | length) == 2
     and .outputs[0] == {leaf_type: 0, origin_network: 0, origin_address: "0x0000000000000000000000000000000000000000",
         destination_network: 0, destination_address: $d, amount: $amount, metadata: "0x", deposit_count: 0,
-        extra_data: {from_address: $v, txn_sender: $o, to_address: $v}}
+        extra_data: {from_address: $v}}
     and .outputs[1] == {leaf_type: 1, origin_network: 1, origin_address: $v,
         destination_network: $mn, destination_address: $d, amount: "0", metadata: $md, deposit_count: 1,
-        extra_data: {from_address: $v, txn_sender: $o, to_address: $v}}' "${CASE_DIR}/recovery.json" >/dev/null \
+        extra_data: {from_address: $v}}' "${CASE_DIR}/recovery.json" >/dev/null \
     || { cat "${CASE_DIR}/recovery.json" >&2; fail "unexpected recovery.json"; }
 # recovery.json format checks (offline): each broken file must be refused with its reason.
 bad_recovery() { # <description> <jq filter> <expected message>
@@ -289,7 +289,7 @@ bad_recovery "a bad address" '.outputs[0].destination_address = "0x12"' "destina
 bad_recovery "a bad extra_data address" '.outputs[0].extra_data.from_address = "0x12"' "outputs[0].extra_data.from_address: must be an address"
 bad_recovery "no extra_data" 'del(.outputs[0].extra_data)' "outputs[0]: missing field: extra_data"
 bad_recovery "extra_data not an object" '.outputs[0].extra_data = "x"' "outputs[0].extra_data: must be an object"
-bad_recovery "a missing extra_data field" 'del(.outputs[1].extra_data.txn_sender)' "outputs[1].extra_data: missing field: txn_sender"
+bad_recovery "a missing extra_data field" 'del(.outputs[1].extra_data.from_address)' "outputs[1].extra_data: missing field: from_address"
 bad_recovery "an unknown extra_data field" '.outputs[0].extra_data.tx_hash = "0x"' "outputs[0].extra_data: unknown field: tx_hash"
 bad_recovery "an event field at the top of the output" '.outputs[0].from_address = .outputs[0].extra_data.from_address' "outputs[0]: unknown field: from_address"
 bad_recovery "odd-length metadata" '.outputs[1].metadata = "0xabc"' "metadata: must be hex bytes"
@@ -518,8 +518,8 @@ ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.s
     --keystore "${KS_DIR}/owner" --password pw >/dev/null
 pkg "${CASE_EOA}" --allow-test-fork --output-dir "${WORKDIR}/out-eoa" >"${WORKDIR}/package-eoa.out" \
     || { cat "${WORKDIR}/package-eoa.out" >&2; fail "packaging the EOA-path case failed"; }
-jq -e --arg o "$(cs "${OWNER}")" --arg b "$(cs "${BRIDGE}")" '(.outputs | length) == 1
-    and .outputs[0].extra_data == {from_address: $o, txn_sender: $o, to_address: $b}' \
+jq -e --arg o "$(cs "${OWNER}")" '(.outputs | length) == 1
+    and .outputs[0].extra_data == {from_address: $o}' \
     "${CASE_EOA}/recovery.json" >/dev/null || { cat "${CASE_EOA}/recovery.json" >&2; fail "unexpected recovery.json for the EOA path"; }
 echo "  package ok with the bridge called by an EOA (the vault withdrew to it first)"
 
