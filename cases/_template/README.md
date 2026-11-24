@@ -62,7 +62,7 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
   "version": 1,
   "outputs": [
     {
-      "leaf_type": 0,
+      "leaf_type": "Transfer",
       "token_info": {
         "origin_network": 0,
         "origin_token_address": "0x0000000000000000000000000000000000000000"
@@ -70,11 +70,10 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
       "destination_network": 0,
       "destination_address": "0x...",
       "amount": "1000000000000000000",
-      "metadata": "0x",
-      "deposit_count": 123456
+      "metadata": "0x"
     },
     {
-      "leaf_type": 1,
+      "leaf_type": "Message",
       "token_info": {
         "origin_network": 1,
         "origin_token_address": "0x..."
@@ -82,8 +81,7 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
       "destination_network": 0,
       "destination_address": "0x...",
       "amount": "0",
-      "metadata": "0x...",
-      "deposit_count": 123457
+      "metadata": "0x..."
     }
   ]
 }
@@ -91,7 +89,7 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
 
 The fields are the ones of the bridge's `BridgeEvent`, with the names aggkit uses:
 
-- `leaf_type` — `0` for a `bridgeAsset`, `1` for a `bridgeMessage`.
+- `leaf_type` — `"Transfer"` for a `bridgeAsset`, `"Message"` for a `bridgeMessage` (as agglayer labels them).
 - `token_info` (`origin_network`, `origin_token_address`) — for a `bridgeAsset`, the token as the bridge identifies it
   (`0` / `0x000...000` for ETH); for a `bridgeMessage`, the network and address that sent it. A
   `bridgeAsset` of a token native to zkEVM (origin network `1`) is refused: only ETH and wrapped
@@ -100,7 +98,6 @@ The fields are the ones of the bridge's `BridgeEvent`, with the names aggkit use
   for a `bridgeAsset`).
 - `amount` — in base units (wei for ETH), as a string; for a `bridgeMessage`, the ETH it carries.
 - `metadata` — as emitted, not decoded (the message bytes of a `bridgeMessage`).
-- `deposit_count` — the bridge's deposit counter for this call.
 
 **Check it**: it is what you recover, and what you sign. If it is not what you want, fix `move.sh`,
 delete `recovery.json` and run the command again. Without a fork at hand, check the file's format

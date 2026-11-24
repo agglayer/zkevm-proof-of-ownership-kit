@@ -2,18 +2,17 @@
 # Builds a case's recovery.json from the transactions move.sh mined on the shadow-fork: one
 # output per BridgeEvent that the zkEVM bridge emitted in them, in order. Each output is a
 # bridge exit Polygon recovers through the certificate, with the BridgeEvent's fields, named as
-# aggkit's bridgesync names them (the origin pair grouped as token_info, as in a certificate's
-# bridge exit):
-#   leaf_type            0 bridgeAsset, 1 bridgeMessage
+# aggkit's bridgesync names them (the origin pair grouped as token_info and leaf_type labeled, as
+# in a certificate's bridge exit; the deposit count is left out):
+#   leaf_type            "Transfer" (bridgeAsset) or "Message" (bridgeMessage)
 #   token_info           {origin_network, origin_token_address}: the token (bridgeAsset; ETH is
 #                        0 / 0x0...0) or the sender of the message (bridgeMessage)
 #   destination_network, destination_address  where it goes; a bridgeAsset must go to network 0
+#   amount               base units, as a string (ETH carried, for a bridgeMessage)
+#   metadata             hex, as emitted (not decoded)
 #
 # A bridgeAsset of a token native to this chain (origin_network = the bridge's networkID(), 1 on
 # zkEVM) is refused: a recovery only bridges ETH and wrapped tokens.
-#   amount               base units, as a string (ETH carried, for a bridgeMessage)
-#   metadata             hex, as emitted (not decoded)
-#   deposit_count        the bridge's deposit counter
 #
 # The result goes to stdout ({"version": 1, "outputs": [...]}); messages go to stderr.
 # submission/helpers/generate.sh runs this script on a fresh fork.
@@ -80,8 +79,7 @@ for tx in "$@"; do
         destination_address="$(sed -n 5p <<<"${fields}")"
         amount="$(sed -n 6p <<<"${fields}")"
         metadata="$(sed -n 7p <<<"${fields}")"
-        deposit_count="$(sed -n 8p <<<"${fields}")"
-        for v in "${leaf_type}" "${origin_network}" "${destination_network}" "${amount}" "${deposit_count}"; do
+        for v in "${leaf_type}" "${origin_network}" "${destination_network}" "${amount}"; do
             [[ "${v}" =~ ^[0-9]+$ ]] || die "unexpected value in a BridgeEvent of ${tx}: ${v}"
         done
         for v in "${origin_address}" "${destination_address}"; do
@@ -108,12 +106,13 @@ for tx in "$@"; do
             die "${tx} emits a BridgeEvent with an unknown leaf type ${leaf_type}."
             ;;
         esac
-        output="$(jq -n -c --argjson lt "${leaf_type}" \
+        if [ "${leaf_type}" = "0" ]; then label="Transfer"; else label="Message"; fi
+        output="$(jq -n -c --arg lt "${label}" \
             --argjson on "${origin_network}" --arg oa "$(cast to-check-sum-address "${origin_address}")" \
             --argjson dn "${destination_network}" --arg da "$(cast to-check-sum-address "${destination_address}")" \
-            --arg amount "${amount}" --arg md "${metadata}" --argjson dc "${deposit_count}" \
+            --arg amount "${amount}" --arg md "${metadata}" \
             '{leaf_type: $lt, token_info: {origin_network: $on, origin_token_address: $oa}, destination_network: $dn,
-              destination_address: $da, amount: $amount, metadata: $md, deposit_count: $dc}')"
+              destination_address: $da, amount: $amount, metadata: $md}')"
         outputs+="${output}"$'\n'
     done <<<"${receipt_data}"
 done
