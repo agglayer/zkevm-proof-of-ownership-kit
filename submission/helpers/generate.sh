@@ -312,12 +312,12 @@ built="$(RPC_URL="${RPC_URL}" "${repo_root}/recovery-tx/build-recovery.sh" ${tx_
     || die "could not build the outputs from the transactions of move.sh — see above."
 
 # The bridge must have really taken what the events say. Per token (ETH also counts what the
-# bridgeMessages carry): ETH and tokens native to this chain stay in the bridge (its balance grows
-# by the amount), wrapped tokens are burned (their total supply shrinks by the amount). Measured at
+# bridgeMessages carry): ETH stays in the bridge (its balance grows by the amount), wrapped tokens
+# are burned (their total supply shrinks by the amount); build-recovery.sh refuses tokens native to
+# this chain. Measured at
 # the head before move.sh and now. Redundant with the events of the real bridge, kept as a check.
 bridge="${BRIDGE_ADDRESS:-0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe}"
 eth_origin="0/0x0000000000000000000000000000000000000000"
-network_id=""
 # read_uint <cast call/balance output>: the integer, checked.
 read_uint() {
     local v="${1%% *}"
@@ -335,21 +335,11 @@ while IFS=$'\t' read -r origin total; do
         before="$(read_uint "$(cast balance "${bridge}" --block "${head_before}" --rpc-url "${RPC_URL}")")"
         after="$(read_uint "$(cast balance "${bridge}" --rpc-url "${RPC_URL}")")"
     else
-        if [ -z "${network_id}" ]; then
-            network_id="$(read_uint "$(cast call "${bridge}" "networkID()(uint32)" --rpc-url "${RPC_URL}")")"
-        fi
-        if [ "${origin_network}" = "${network_id}" ]; then
-            measured="bridge_balance"
-            holder="${origin_address}"
-            before="$(read_uint "$(cast call "${holder}" "balanceOf(address)(uint256)" "${bridge}" --block "${head_before}" --rpc-url "${RPC_URL}")")"
-            after="$(read_uint "$(cast call "${holder}" "balanceOf(address)(uint256)" "${bridge}" --rpc-url "${RPC_URL}")")"
-        else
-            measured="total_supply"
-            holder="$(cast call "${bridge}" "getTokenWrappedAddress(uint32,address)(address)" "${origin_network}" "${origin_address}" --rpc-url "${RPC_URL}")"
-            [[ "${holder}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "could not read the wrapped token of (${origin_network}, ${origin_address}) from the bridge."
-            before="$(read_uint "$(cast call "${holder}" "totalSupply()(uint256)" --block "${head_before}" --rpc-url "${RPC_URL}")")"
-            after="$(read_uint "$(cast call "${holder}" "totalSupply()(uint256)" --rpc-url "${RPC_URL}")")"
-        fi
+        measured="total_supply"
+        holder="$(cast call "${bridge}" "getTokenWrappedAddress(uint32,address)(address)" "${origin_network}" "${origin_address}" --rpc-url "${RPC_URL}")"
+        [[ "${holder}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "could not read the wrapped token of (${origin_network}, ${origin_address}) from the bridge."
+        before="$(read_uint "$(cast call "${holder}" "totalSupply()(uint256)" --block "${head_before}" --rpc-url "${RPC_URL}")")"
+        after="$(read_uint "$(cast call "${holder}" "totalSupply()(uint256)" --rpc-url "${RPC_URL}")")"
     fi
     if [ "${measured}" = "bridge_balance" ]; then
         moved="$(bc_calc "${after} - ${before}")"

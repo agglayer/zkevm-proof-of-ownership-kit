@@ -80,7 +80,7 @@ plain and step-by-step.
   case's `move.sh` against the fork, inside a sandbox container), `build-recovery.sh` (builds
   `recovery.json` from tx hashes: one output per `BridgeEvent` of the zkEVM bridge, with
   aggkit's bridgesync names for the event's fields; refuses bridgeAsset to
-  a network other than 0; `BRIDGE_ADDRESS` is a test-only override), `validate-recovery.sh` (offline check of a case's `recovery.json`; its schema
+  a network other than 0 and of a token native to the chain (origin network = the bridge's `networkID()`); `BRIDGE_ADDRESS` is a test-only override), `validate-recovery.sh` (offline check of a case's `recovery.json`; its schema
   lives there), `list-impersonated.sh` (derives senders from receipts and verifies a case's
   `signatures.json`).
 - `ownership-proof/` — `message-template.txt` (the fixed proof message, bound to the case by the
@@ -102,7 +102,7 @@ plain and step-by-step.
   `.tgz` and how to verify it. `helpers/generate.sh` runs a case against the fork and checks it:
   validates `recovery.json` (if present), checks `fork.log`, runs `move.sh`, derives the senders from
   the mined blocks, builds the outputs with `build-recovery.sh`, checks per token that the bridge's balance grew
-  (ETH, tokens of this network) or the wrapped token's supply shrank by exactly the bridged amount
+  (ETH) or the wrapped token's supply shrank by exactly the bridged amount
   (amounts through `bc`: they are 256-bit), writes `recovery.json` into the case when it is missing
   or else requires it to equal the built one (`jq -S`), requires a valid signature in the (pre-filled)
   `signatures.json` for every EOA sender — it never signs, it prints the

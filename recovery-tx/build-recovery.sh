@@ -8,6 +8,9 @@
 #   token_info           {origin_network, origin_token_address}: the token (bridgeAsset; ETH is
 #                        0 / 0x0...0) or the sender of the message (bridgeMessage)
 #   destination_network, destination_address  where it goes; a bridgeAsset must go to network 0
+#
+# A bridgeAsset of a token native to this chain (origin_network = the bridge's networkID(), 1 on
+# zkEVM) is refused: a recovery only bridges ETH and wrapped tokens.
 #   amount               base units, as a string (ETH carried, for a bridgeMessage)
 #   metadata             hex, as emitted (not decoded)
 #   deposit_count        the bridge's deposit counter
@@ -53,6 +56,7 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 [[ "${BRIDGE_ADDRESS}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "BRIDGE_ADDRESS '${BRIDGE_ADDRESS}' is not an address."
 bridge="$(lower "${BRIDGE_ADDRESS}")"
+network_id=""
 
 outputs="[]"
 for tx in "$@"; do
@@ -87,6 +91,13 @@ for tx in "$@"; do
         0)
             [ "${destination_network}" = "0" ] \
                 || die "${tx} calls bridgeAsset to network ${destination_network}; a recovery can only bridge assets to Ethereum (destinationNetwork 0)."
+            if [ -z "${network_id}" ]; then
+                network_id="$(cast call "${BRIDGE_ADDRESS}" "networkID()(uint32)" --rpc-url "${RPC_URL}")" \
+                    || die "could not read networkID() from the bridge (${BRIDGE_ADDRESS})."
+                [[ "${network_id}" =~ ^[0-9]+$ ]] || die "unexpected networkID() from the bridge: ${network_id}"
+            fi
+            [ "${origin_network}" != "${network_id}" ] \
+                || die "${tx} bridges ${origin_address}, a token native to this chain (origin network ${network_id}); a recovery cannot bridge native L2 tokens."
             echo "bridgeAsset   ${tx}: ${amount} of token (network ${origin_network}, ${origin_address}) to ${destination_address} on network 0" >&2
             ;;
         1)

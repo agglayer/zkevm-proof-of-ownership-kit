@@ -174,8 +174,8 @@ cast send "${VAULT2}" "transferOwnership(address)" "${CONTROLLER}" --private-key
 vault2_wei="$(balance_wei "${VAULT2}" "${GETH_URL}")"
 echo "  bridge ${BRIDGE}; vault ${VAULT}, owner ${OWNER}; vault2 ${VAULT2} owned by the contract ${CONTROLLER}"
 
-# ERC-20s held by the vault: one native to this chain (the bridge locks it) and one wrapped (a token
-# of network 0, which the bridge burns).
+# ERC-20s held by the vault: one native to this chain (bridging it must be refused) and one wrapped
+# (a token of network 0, which the bridge burns).
 L1_TOKEN="0x1111111111111111111111111111111111111111"
 NATIVE_TOKEN="$(cd "${WORKDIR}/forge" && forge create src/MockBridge.sol:MockERC20 --root . --broadcast --json \
     --private-key "${OWNER_TEST_KEY}" --rpc-url "${GETH_URL}" --constructor-args "${BRIDGE}" | jq -r '.deployedTo')"
@@ -522,22 +522,37 @@ jq -e --arg d "$(cs "${DEST}")" '(.outputs | length) == 1
     "${CASE_EOA}/recovery.json" >/dev/null || { cat "${CASE_EOA}/recovery.json" >&2; fail "unexpected recovery.json for the EOA path"; }
 echo "  package ok with the bridge called by an EOA (the vault withdrew to it first)"
 
-# Positive: tokens and a bridgeMessage carrying ETH. The vault approves and bridges 300 of the native
-# token (locked in the bridge), bridges 200 of the wrapped token (burned) and sends a message with
-# 7 wei. The balance check covers the three kinds: bridge ETH balance, bridge token balance, supply.
+# Negative: a bridgeAsset of a token native to this chain (origin network = the bridge's
+# networkID()) is refused.
+CASE_NATIVE="${WORKDIR}/case-native"
+cp -r "${CASE_DIR}" "${CASE_NATIVE}"
+rm "${CASE_NATIVE}/recovery.json"
+echo '[]' >"${CASE_NATIVE}/signatures.json"
+approve_call="$(cast calldata "approve(address,uint256)" "${BRIDGE}" 300)"
+native_call="$(cast calldata "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "${DEST}" 300 "${NATIVE_TOKEN}" true 0x)"
+cat >"${CASE_NATIVE}/move.sh" <<NATIVE
+#!/bin/bash
+set -euo pipefail
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${NATIVE_TOKEN}" 0 "${approve_call}" --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${BRIDGE}" 0 "${native_call}" --json --rpc-url "\${RPC_URL}"
+NATIVE
+expect_fail "prepare-submission.sh refuses a bridgeAsset of a token native to the chain" \
+    pkg "${CASE_NATIVE}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "cannot bridge native L2 tokens" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the native-token message"; }
+[ ! -f "${CASE_NATIVE}/recovery.json" ] || fail "recovery.json written for a native-token bridge"
+
+# Positive: a wrapped token and a bridgeMessage carrying ETH. The vault bridges 200 of the wrapped
+# token (burned) and sends a message with 7 wei. The balance check covers both kinds: bridge ETH
+# balance and wrapped supply.
 CASE_TOKENS="${WORKDIR}/case-tokens"
 cp -r "${CASE_DIR}" "${CASE_TOKENS}"
 rm "${CASE_TOKENS}/recovery.json"
 echo '[]' >"${CASE_TOKENS}/signatures.json"
-approve_call="$(cast calldata "approve(address,uint256)" "${BRIDGE}" 300)"
-native_call="$(cast calldata "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "${DEST}" 300 "${NATIVE_TOKEN}" true 0x)"
 wrapped_call="$(cast calldata "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "${DEST}" 200 "${WRAPPED_TOKEN}" true 0x)"
 msg_call="$(cast calldata "bridgeMessage(uint32,address,bool,bytes)" "${MESSAGE_NETWORK}" "${DEST}" true 0x)"
 cat >"${CASE_TOKENS}/move.sh" <<TOKENS
 #!/bin/bash
 set -euo pipefail
-cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${NATIVE_TOKEN}" 0 "${approve_call}" --json --rpc-url "\${RPC_URL}"
-cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${BRIDGE}" 0 "${native_call}" --json --rpc-url "\${RPC_URL}"
 cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${BRIDGE}" 0 "${wrapped_call}" --json --rpc-url "\${RPC_URL}"
 cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${BRIDGE}" 7 "${msg_call}" --json --rpc-url "\${RPC_URL}"
 TOKENS
@@ -547,25 +562,22 @@ ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.s
     --keystore "${KS_DIR}/owner" --password pw >/dev/null
 pkg "${CASE_TOKENS}" --allow-test-fork --output-dir "${WORKDIR}/out-tokens" >"${WORKDIR}/package-tokens.out" \
     || { cat "${WORKDIR}/package-tokens.out" >&2; fail "packaging the token case failed"; }
-jq -e --arg n "$(cs "${NATIVE_TOKEN}")" --arg l1 "$(cs "${L1_TOKEN}")" --arg v "$(cs "${VAULT}")" '(.outputs | length) == 3
-    and (.outputs[0] | .leaf_type == 0 and .token_info == {origin_network: 1, origin_token_address: $n} and .amount == "300")
-    and (.outputs[1] | .leaf_type == 0 and .token_info == {origin_network: 0, origin_token_address: $l1} and .amount == "200")
-    and (.outputs[2] | .leaf_type == 1 and .token_info.origin_token_address == $v and .amount == "7" and .metadata == "0x")' \
+jq -e --arg l1 "$(cs "${L1_TOKEN}")" --arg v "$(cs "${VAULT}")" '(.outputs | length) == 2
+    and (.outputs[0] | .leaf_type == 0 and .token_info == {origin_network: 0, origin_token_address: $l1} and .amount == "200")
+    and (.outputs[1] | .leaf_type == 1 and .token_info.origin_token_address == $v and .amount == "7" and .metadata == "0x")' \
     "${CASE_TOKENS}/recovery.json" >/dev/null || { cat "${CASE_TOKENS}/recovery.json" >&2; fail "unexpected recovery.json for the token case"; }
 mkdir -p "${WORKDIR}/unpacked-tokens"
 tar -xzf "${WORKDIR}"/out-tokens/case-tokens-*.tgz -C "${WORKDIR}/unpacked-tokens"
-jq -e --arg n "$(printf '%s' "${NATIVE_TOKEN}" | tr '[:upper:]' '[:lower:]')" --arg w "$(printf '%s' "${WRAPPED_TOKEN}" | tr '[:upper:]' '[:lower:]')" '
-    (.balances | length) == 3
+jq -e --arg w "$(printf '%s' "${WRAPPED_TOKEN}" | tr '[:upper:]' '[:lower:]')" '
+    (.balances | length) == 2
     and any(.balances[]; .token_info.origin_network == 0 and .token_info.origin_token_address == "0x0000000000000000000000000000000000000000"
         and .measured == "bridge_balance" and .bridged == "7")
-    and any(.balances[]; .token_info.origin_network == 1 and .measured == "bridge_balance" and .address == $n
-        and .bridged == "300" and ((.after | tonumber) - (.before | tonumber)) == 300)
     and any(.balances[]; .token_info.origin_network == 0 and .measured == "total_supply" and .address == $w
         and .bridged == "200" and ((.before | tonumber) - (.after | tonumber)) == 200)' \
     "${WORKDIR}/unpacked-tokens/case-tokens/manifest.json" >/dev/null \
     || { jq '.balances' "${WORKDIR}/unpacked-tokens/case-tokens/manifest.json" >&2; fail "unexpected balances for the token case"; }
 PKG_TOKENS="$(ls "${WORKDIR}"/out-tokens/case-tokens-*.tgz)"
-echo "  package ok with a native token, a wrapped token and a bridgeMessage carrying ETH"
+echo "  package ok with a wrapped token and a bridgeMessage carrying ETH"
 
 # Positive: everything signed -> a package.
 pkg "${CASE_DIR}" --allow-test-fork --output-dir "${OUT_DIR}" >"${WORKDIR}/package.out"

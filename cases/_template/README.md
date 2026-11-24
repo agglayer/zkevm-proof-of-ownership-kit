@@ -93,7 +93,9 @@ The fields are the ones of the bridge's `BridgeEvent`, with the names aggkit use
 
 - `leaf_type` — `0` for a `bridgeAsset`, `1` for a `bridgeMessage`.
 - `token_info` (`origin_network`, `origin_token_address`) — for a `bridgeAsset`, the token as the bridge identifies it
-  (`0` / `0x000...000` for ETH); for a `bridgeMessage`, the network and address that sent it.
+  (`0` / `0x000...000` for ETH); for a `bridgeMessage`, the network and address that sent it. A
+  `bridgeAsset` of a token native to zkEVM (origin network `1`) is refused: only ETH and wrapped
+  tokens can be recovered.
 - `destination_network`, `destination_address` — where the output goes (`0` is Ethereum; always `0`
   for a `bridgeAsset`).
 - `amount` — in base units (wei for ETH), as a string; for a `bridgeMessage`, the ETH it carries.

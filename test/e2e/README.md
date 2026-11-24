@@ -23,9 +23,9 @@
    then unpacks the `.tgz` and checks `manifest.json`, the file hashes and the signatures. A case
    without `recovery.json` gets it written from `move.sh` (identical to step 5's), and a case driven
    by impersonating a contract (nobody signs) is packaged too, as is one where the vault withdraws to the
-   owner and the owner calls the bridge, and one that bridges a native token (locked in the bridge), a
-   wrapped token (burned) and a `bridgeMessage` carrying ETH, checking all three kinds of balance in the
-   manifest.
+   owner and the owner calls the bridge, and one that bridges a wrapped token (burned) and a
+   `bridgeMessage` carrying ETH, checking both kinds of balance in the manifest. Bridging a token
+   native to the chain is refused.
 
 9. runs `submission/verify-submission.sh` on the `.tgz` (it starts its own fork), which unpacks it,
    re-runs `move.sh`, checks that it gives `recovery.json`, the impersonated addresses and the signatures, and compares
