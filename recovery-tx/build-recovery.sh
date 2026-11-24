@@ -58,7 +58,8 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 bridge="$(lower "${BRIDGE_ADDRESS}")"
 network_id=""
 
-outputs="[]"
+# One JSON object per line; slurped at the end (no growing JSON on a command line).
+outputs=""
 for tx in "$@"; do
     [[ "${tx}" =~ ^0x[0-9a-fA-F]{64}$ ]] || die "'${tx}' is not a transaction hash."
     receipt="$(cast receipt "${tx}" --json --rpc-url "${RPC_URL}")" || die "could not read the receipt of ${tx} from ${RPC_URL}."
@@ -113,11 +114,11 @@ for tx in "$@"; do
             --arg amount "${amount}" --arg md "${metadata}" --argjson dc "${deposit_count}" \
             '{leaf_type: $lt, token_info: {origin_network: $on, origin_token_address: $oa}, destination_network: $dn,
               destination_address: $da, amount: $amount, metadata: $md, deposit_count: $dc}')"
-        outputs="$(jq -c --argjson o "${output}" '. + [$o]' <<<"${outputs}")"
+        outputs+="${output}"$'\n'
     done <<<"${receipt_data}"
 done
 
-[ "$(jq 'length' <<<"${outputs}")" -gt 0 ] \
+[ -n "${outputs}" ] \
     || die "none of these transactions calls the bridge (${BRIDGE_ADDRESS}): move.sh must end with a call to bridgeAsset / bridgeMessage."
 
-jq -n --argjson outputs "${outputs}" '{version: 1, outputs: $outputs}'
+printf '%s' "${outputs}" | jq -s '{version: 1, outputs: .}'

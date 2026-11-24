@@ -482,13 +482,13 @@ jq -n \
     --argjson eoa_senders "$(to_json_array "${eoa_senders}")" \
     --argjson contract_senders "$(to_json_array "${contract_senders}")" \
     --argjson required_signers "$(to_json_array "${required}")" \
-    --argjson outputs "$(jq -c '.outputs' "${recovery_path}")" \
+    --slurpfile recovery "${recovery_path}" \
     --argjson balances "${balances}" \
     --argjson files "${files_json}" \
     '{case_id: $case_id, created_at: $created_at, kit_commit: $kit_commit, kit_dirty: $kit_dirty,
       test_fork: $test_fork, fork_block: $fork_block, chain_id: $chain_id,
       head_before: $head_before, head_after: $head_after,
-      nonce: $nonce, outputs: $outputs, balances: $balances,
+      nonce: $nonce, outputs: $recovery[0].outputs, balances: $balances,
       tx_hashes: $tx_hashes, eoa_senders: $eoa_senders, contract_senders: $contract_senders,
       required_signers: $required_signers, files: $files}' >"${stage}/manifest.json"
 
