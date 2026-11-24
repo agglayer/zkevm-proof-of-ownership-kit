@@ -14,9 +14,7 @@
 #       "origin_network": <uint32>, "origin_address": "0x...",
 #       "destination_network": <uint32> (0 for a bridgeAsset), "destination_address": "0x...",
 #       "amount": "<base units, as a string>", "metadata": "0x<hex bytes>",
-#       "deposit_count": <uint32>,
-#       "extra_data": { (not in the BridgeEvent)
-#         "from_address": "0x..." (the bridge caller) } }
+#       "deposit_count": <uint32> }
 #
 # Requires: jq.
 #
@@ -47,8 +45,7 @@ errors="$(jq -r '
   def addr: type == "string" and test("^0x[0-9a-fA-F]{40}$");
   def uint32: type == "number" and . == floor and . >= 0 and . <= 4294967295;
   ["leaf_type", "origin_network", "origin_address", "destination_network", "destination_address",
-   "amount", "metadata", "deposit_count", "extra_data"] as $fields
-  | ["from_address"] as $extra
+   "amount", "metadata", "deposit_count"] as $fields
   | . as $r
   | if type != "object" then "the top level must be a JSON object"
     else
@@ -67,15 +64,6 @@ errors="$(jq -r '
                   | if ($o[$k] | uint32) then empty else "\($w).\($k): must be a uint32" end ),
                 ( ("origin_address", "destination_address") as $k
                   | if ($o[$k] | addr) then empty else "\($w).\($k): must be an address (0x + 40 hex chars)" end ),
-                ( if ($o | has("extra_data")) | not then empty
-                  elif ($o.extra_data | type) != "object" then "\($w).extra_data: must be an object"
-                  else
-                    ( ($o.extra_data | keys_unsorted - $extra)[] | "\($w).extra_data: unknown field: \(.)" ),
-                    ( $extra[] as $k
-                      | if ($o.extra_data | has($k)) | not then "\($w).extra_data: missing field: \($k)"
-                        elif ($o.extra_data[$k] | addr) then empty
-                        else "\($w).extra_data.\($k): must be an address (0x + 40 hex chars)" end )
-                  end ),
                 ( if ($o.amount | type) == "string" and ($o.amount | test("^(0|[1-9][0-9]*)$")) then empty
                   else "\($w).amount: must be an integer in base units, written as a string" end ),
                 ( if ($o.metadata | type) == "string" and ($o.metadata | test("^0x([0-9a-fA-F]{2})*$")) then empty

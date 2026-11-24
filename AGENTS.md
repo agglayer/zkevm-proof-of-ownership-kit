@@ -79,9 +79,7 @@ plain and step-by-step.
 - `recovery-tx/` — `impersonate-and-move.template.sh` (annotated template), `run.sh` (runs a
   case's `move.sh` against the fork, inside a sandbox container), `build-recovery.sh` (builds
   `recovery.json` from tx hashes: one output per `BridgeEvent` of the zkEVM bridge, with
-  aggkit's bridgesync field names minus the run-dependent ones, the non-event ones under
-  `extra_data`; `extra_data.from_address` = the address that
-  CALLed the bridge, read from `debug_traceTransaction` callTracer `withLog`; refuses bridgeAsset to
+  aggkit's bridgesync names for the event's fields; refuses bridgeAsset to
   a network other than 0; `BRIDGE_ADDRESS` is a test-only override), `validate-recovery.sh` (offline check of a case's `recovery.json`; its schema
   lives there), `list-impersonated.sh` (derives senders from receipts and verifies a case's
   `signatures.json`).
@@ -97,7 +95,7 @@ plain and step-by-step.
   `prepare-submission.sh` generates it from `move.sh` — `{version: 1, outputs: [...]}`, each output
   `leaf_type` (0 bridgeAsset, 1 bridgeMessage), `origin_network`, `origin_address`,
   `destination_network` (0 for bridgeAsset), `destination_address`, `amount` (string), `metadata`
-  (hex, not decoded), `deposit_count`, and `extra_data` (not in the event): `from_address`.
+  (hex, not decoded), `deposit_count`.
 - `submission/` — `prepare-submission.sh` is the one script stakeholders run: it pre-checks the case
   (`move.sh` present and without template placeholders, `recovery.json` valid if present), runs
   `helpers/generate.sh`, packs its output with `helpers/package.sh` and prints where to send the
@@ -252,8 +250,6 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
   silently hit `localhost:8545`.
 - `fork.sh` refuses to start if the RPC's latest block isn't the halt block — that's intended, not
   a bug to work around.
-- `build-recovery.sh` needs `debug_traceTransaction` (the Anvil fork serves it; geth `--dev` in the
-  e2e only serves the upstream chain, the trace runs on the fork).
 - The date in the signed message is the signing day (UTC), so `--print-message` output should be
   signed the same day.
 

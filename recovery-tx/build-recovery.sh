@@ -1,9 +1,8 @@
 #!/bin/bash
 # Builds a case's recovery.json from the transactions move.sh mined on the shadow-fork: one
 # output per BridgeEvent that the zkEVM bridge emitted in them, in order. Each output is a
-# bridge exit Polygon recovers through the certificate, with the BridgeEvent's fields (named as
-# aggkit's bridgesync names them) and, under extra_data, the bridge caller, which the event does
-# not carry:
+# bridge exit Polygon recovers through the certificate, with the BridgeEvent's fields, named as
+# aggkit's bridgesync names them:
 #   leaf_type            0 bridgeAsset, 1 bridgeMessage
 #   origin_network, origin_address            the token (bridgeAsset; ETH is 0 / 0x0...0) or the
 #                                             sender of the message (bridgeMessage)
@@ -11,14 +10,11 @@
 #   amount               base units, as a string (ETH carried, for a bridgeMessage)
 #   metadata             hex, as emitted (not decoded)
 #   deposit_count        the bridge's deposit counter
-#   extra_data           not in the event:
-#     from_address       the address that called the bridge (msg.sender of bridgeAsset /
-#                        bridgeMessage, read from the call trace, debug_traceTransaction)
 #
 # The result goes to stdout ({"version": 1, "outputs": [...]}); messages go to stderr.
 # submission/helpers/generate.sh runs this script on a fresh fork.
 #
-# Requires: cast, jq, and an RPC that serves debug_traceTransaction (the shadow-fork does).
+# Requires: cast, jq.
 #
 # Usage:
 #   recovery-tx/build-recovery.sh <tx-hash> [<tx-hash> ...] > cases/<case-id>/recovery.json
@@ -57,19 +53,6 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 [[ "${BRIDGE_ADDRESS}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "BRIDGE_ADDRESS '${BRIDGE_ADDRESS}' is not an address."
 bridge="$(lower "${BRIDGE_ADDRESS}")"
 
-# Every BridgeEvent in a call trace, with the address that CALLed the bridge around it (the
-# event itself is emitted inside the bridge proxy's delegatecall, so the caller is taken from
-# the nearest enclosing CALL to the bridge address).
-# shellcheck disable=SC2016  # a jq program: $bridge, $caller... are jq variables
-trace_events='
-def ev($caller):
-  (if .type == "CALL" and ((.to // "") | ascii_downcase) == $bridge then ((.from // "") | ascii_downcase) else $caller end) as $c
-  | ( (.logs // [])[]
-      | select(((.address // "") | ascii_downcase) == $bridge and (((.topics // [])[0] // "") | ascii_downcase) == $topic)
-      | {caller: $c, data: ((.data // "") | ascii_downcase)} ),
-    ( (.calls // [])[] | ev($c) );
-[ev("")]'
-
 outputs="[]"
 for tx in "$@"; do
     [[ "${tx}" =~ ^0x[0-9a-fA-F]{64}$ ]] || die "'${tx}' is not a transaction hash."
@@ -78,16 +61,8 @@ for tx in "$@"; do
         '.logs[] | select((.address | ascii_downcase) == $bridge and ((.topics[0] // "") | ascii_downcase) == $topic) | .data | ascii_downcase' <<<"${receipt}")"
     [ -n "${receipt_data}" ] || continue
 
-    trace="$(cast rpc debug_traceTransaction "${tx}" '{"tracer":"callTracer","tracerConfig":{"withLog":true}}' --rpc-url "${RPC_URL}")" \
-        || die "could not trace ${tx} (debug_traceTransaction) on ${RPC_URL}."
-    events="$(jq -c --arg bridge "${bridge}" --arg topic "${bridge_topic}" "${trace_events}" <<<"${trace}")"
-
     while IFS= read -r data; do
         [[ "${data}" =~ ^0x([0-9a-f]{64})+$ ]] || die "unexpected BridgeEvent data in ${tx}: ${data}"
-        # The data carries the deposit count, so it identifies the event within the trace.
-        caller="$(jq -r --arg d "${data}" '[.[] | select(.data == $d) | .caller] | if length == 1 then .[0] else "" end' <<<"${events}")"
-        [[ "${caller}" =~ ^0x[0-9a-f]{40}$ ]] || die "could not find, in the call trace of ${tx}, which address called the bridge for one of its BridgeEvents."
-
         decoded="$(cast decode-abi --input "f(uint8,uint32,address,uint32,address,uint256,bytes,uint32)" "${data}")" \
             || die "could not decode a BridgeEvent of ${tx}."
         fields=""
@@ -111,10 +86,10 @@ for tx in "$@"; do
         0)
             [ "${destination_network}" = "0" ] \
                 || die "${tx} calls bridgeAsset to network ${destination_network}; a recovery can only bridge assets to Ethereum (destinationNetwork 0)."
-            echo "bridgeAsset   ${tx}: ${amount} of token (network ${origin_network}, ${origin_address}) from ${caller} to ${destination_address} on network 0" >&2
+            echo "bridgeAsset   ${tx}: ${amount} of token (network ${origin_network}, ${origin_address}) to ${destination_address} on network 0" >&2
             ;;
         1)
-            echo "bridgeMessage ${tx}: from ${caller} to ${destination_address} on network ${destination_network} (${amount} wei)" >&2
+            echo "bridgeMessage ${tx}: from ${origin_address} to ${destination_address} on network ${destination_network} (${amount} wei)" >&2
             ;;
         *)
             die "${tx} emits a BridgeEvent with an unknown leaf type ${leaf_type}."
@@ -124,10 +99,8 @@ for tx in "$@"; do
             --argjson on "${origin_network}" --arg oa "$(cast to-check-sum-address "${origin_address}")" \
             --argjson dn "${destination_network}" --arg da "$(cast to-check-sum-address "${destination_address}")" \
             --arg amount "${amount}" --arg md "${metadata}" --argjson dc "${deposit_count}" \
-            --arg from "$(cast to-check-sum-address "${caller}")" \
             '{leaf_type: $lt, origin_network: $on, origin_address: $oa, destination_network: $dn,
-              destination_address: $da, amount: $amount, metadata: $md, deposit_count: $dc,
-              extra_data: {from_address: $from}}')"
+              destination_address: $da, amount: $amount, metadata: $md, deposit_count: $dc}')"
         outputs="$(jq -c --argjson o "${output}" '. + [$o]' <<<"${outputs}")"
     done <<<"${receipt_data}"
 done
