@@ -264,9 +264,9 @@ cs() { cast to-check-sum-address "$1"; }
 jq -e --arg v "$(cs "${VAULT}")" --arg d "$(cs "${DEST}")" --arg amount "${ASSET_WEI}" \
     --argjson mn "${MESSAGE_NETWORK}" --arg md "${MESSAGE_METADATA}" '
     .version == 1 and (.outputs | length) == 2
-    and .outputs[0] == {leaf_type: 0, origin_network: 0, origin_address: "0x0000000000000000000000000000000000000000",
+    and .outputs[0] == {leaf_type: 0, token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"},
         destination_network: 0, destination_address: $d, amount: $amount, metadata: "0x", deposit_count: 0}
-    and .outputs[1] == {leaf_type: 1, origin_network: 1, origin_address: $v,
+    and .outputs[1] == {leaf_type: 1, token_info: {origin_network: 1, origin_token_address: $v},
         destination_network: $mn, destination_address: $d, amount: "0", metadata: $md, deposit_count: 1}' "${CASE_DIR}/recovery.json" >/dev/null \
     || { cat "${CASE_DIR}/recovery.json" >&2; fail "unexpected recovery.json"; }
 # recovery.json format checks (offline): each broken file must be refused with its reason.
@@ -284,6 +284,13 @@ bad_recovery "an unknown leaf type" '.outputs[0].leaf_type = 2' "leaf_type: must
 bad_recovery "a bridgeAsset to another network" '.outputs[0].destination_network = 5' "must be 0 (Ethereum)"
 bad_recovery "a numeric amount" '.outputs[0].amount = 5' "amount: must be an integer"
 bad_recovery "a bad address" '.outputs[0].destination_address = "0x12"' "destination_address: must be an address"
+bad_recovery "no token_info" 'del(.outputs[0].token_info)' "outputs[0]: missing field: token_info"
+bad_recovery "token_info not an object" '.outputs[0].token_info = 0' "outputs[0].token_info: must be an object"
+bad_recovery "a missing token_info field" 'del(.outputs[0].token_info.origin_token_address)' "outputs[0].token_info: missing field: origin_token_address"
+bad_recovery "an unknown token_info field" '.outputs[0].token_info.origin_address = "0x"' "outputs[0].token_info: unknown field: origin_address"
+bad_recovery "a bad origin_token_address" '.outputs[1].token_info.origin_token_address = "0x12"' "outputs[1].token_info.origin_token_address: must be an address"
+bad_recovery "an origin_network over uint32" '.outputs[0].token_info.origin_network = 4294967296' "outputs[0].token_info.origin_network: must be a uint32"
+bad_recovery "the origin fields at the top of the output" '.outputs[0] += .outputs[0].token_info' "outputs[0]: unknown field: origin_network"
 bad_recovery "odd-length metadata" '.outputs[1].metadata = "0xabc"' "metadata: must be hex bytes"
 bad_recovery "a network over uint32" '.outputs[1].destination_network = 4294967296' "destination_network: must be a uint32"
 echo "  recovery.json format checks ok"
@@ -541,19 +548,19 @@ ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.s
 pkg "${CASE_TOKENS}" --allow-test-fork --output-dir "${WORKDIR}/out-tokens" >"${WORKDIR}/package-tokens.out" \
     || { cat "${WORKDIR}/package-tokens.out" >&2; fail "packaging the token case failed"; }
 jq -e --arg n "$(cs "${NATIVE_TOKEN}")" --arg l1 "$(cs "${L1_TOKEN}")" --arg v "$(cs "${VAULT}")" '(.outputs | length) == 3
-    and (.outputs[0] | .leaf_type == 0 and .origin_network == 1 and .origin_address == $n and .amount == "300")
-    and (.outputs[1] | .leaf_type == 0 and .origin_network == 0 and .origin_address == $l1 and .amount == "200")
-    and (.outputs[2] | .leaf_type == 1 and .origin_address == $v and .amount == "7" and .metadata == "0x")' \
+    and (.outputs[0] | .leaf_type == 0 and .token_info == {origin_network: 1, origin_token_address: $n} and .amount == "300")
+    and (.outputs[1] | .leaf_type == 0 and .token_info == {origin_network: 0, origin_token_address: $l1} and .amount == "200")
+    and (.outputs[2] | .leaf_type == 1 and .token_info.origin_token_address == $v and .amount == "7" and .metadata == "0x")' \
     "${CASE_TOKENS}/recovery.json" >/dev/null || { cat "${CASE_TOKENS}/recovery.json" >&2; fail "unexpected recovery.json for the token case"; }
 mkdir -p "${WORKDIR}/unpacked-tokens"
 tar -xzf "${WORKDIR}"/out-tokens/case-tokens-*.tgz -C "${WORKDIR}/unpacked-tokens"
 jq -e --arg n "$(printf '%s' "${NATIVE_TOKEN}" | tr '[:upper:]' '[:lower:]')" --arg w "$(printf '%s' "${WRAPPED_TOKEN}" | tr '[:upper:]' '[:lower:]')" '
     (.balances | length) == 3
-    and any(.balances[]; .token.origin_network == 0 and .token.origin_address == "0x0000000000000000000000000000000000000000"
+    and any(.balances[]; .token_info.origin_network == 0 and .token_info.origin_token_address == "0x0000000000000000000000000000000000000000"
         and .measured == "bridge_balance" and .bridged == "7")
-    and any(.balances[]; .token.origin_network == 1 and .measured == "bridge_balance" and .address == $n
+    and any(.balances[]; .token_info.origin_network == 1 and .measured == "bridge_balance" and .address == $n
         and .bridged == "300" and ((.after | tonumber) - (.before | tonumber)) == 300)
-    and any(.balances[]; .token.origin_network == 0 and .measured == "total_supply" and .address == $w
+    and any(.balances[]; .token_info.origin_network == 0 and .measured == "total_supply" and .address == $w
         and .bridged == "200" and ((.before | tonumber) - (.after | tonumber)) == 200)' \
     "${WORKDIR}/unpacked-tokens/case-tokens/manifest.json" >/dev/null \
     || { jq '.balances' "${WORKDIR}/unpacked-tokens/case-tokens/manifest.json" >&2; fail "unexpected balances for the token case"; }
@@ -573,7 +580,7 @@ jq -e --arg nonce "${NONCE}" --arg owner "${OWNER}" --argjson outputs "$(jq -c '
     .test_fork == true and .nonce == $nonce and (.tx_hashes | length) == 2
     and .required_signers == [$owner | ascii_downcase] and .contract_senders == []
     and .outputs == $outputs
-    and .balances == [{token: {origin_network: 0, origin_address: "0x0000000000000000000000000000000000000000"},
+    and .balances == [{token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"},
         measured: "bridge_balance", address: (.balances[0].address), before: "0", after: "'"${ASSET_WEI}"'",
         bridged: "'"${ASSET_WEI}"'"}]' "${PKG_DIR}/manifest.json" >/dev/null \
     || { cat "${PKG_DIR}/manifest.json" >&2; fail "unexpected manifest.json"; }

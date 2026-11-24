@@ -366,10 +366,10 @@ while IFS=$'\t' read -r origin total; do
     fi
     balances="$(jq -c --argjson on "${origin_network}" --arg oa "${origin_address}" --arg measured "${measured}" \
         --arg holder "$(lower "${holder}")" --arg before "${before}" --arg after "${after}" --arg bridged "${total}" \
-        '. + [{token: {origin_network: $on, origin_address: $oa}, measured: $measured, address: $holder,
+        '. + [{token_info: {origin_network: $on, origin_token_address: $oa}, measured: $measured, address: $holder,
                before: $before, after: $after, bridged: $bridged}]' <<<"${balances}")"
 done < <(jq -r --arg eth "${eth_origin}" '
-    [.outputs[] | {key: (if .leaf_type == 0 then "\(.origin_network)/\(.origin_address | ascii_downcase)" else $eth end), amount}]
+    [.outputs[] | {key: (if .leaf_type == 0 then "\(.token_info.origin_network)/\(.token_info.origin_token_address | ascii_downcase)" else $eth end), amount}]
     | group_by(.key)[] | [.[0].key, (map(.amount) | join("+"))] | @tsv' <<<"${built}" \
     | while IFS=$'\t' read -r key sum; do printf '%s\t%s\n' "${key}" "$(bc_calc "${sum}")"; done)
 [ "${balance_failed}" -eq 0 ] || die "the balances do not match the BridgeEvents of move.sh (see above)."

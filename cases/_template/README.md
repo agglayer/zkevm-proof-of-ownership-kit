@@ -63,8 +63,10 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
   "outputs": [
     {
       "leaf_type": 0,
-      "origin_network": 0,
-      "origin_address": "0x0000000000000000000000000000000000000000",
+      "token_info": {
+        "origin_network": 0,
+        "origin_token_address": "0x0000000000000000000000000000000000000000"
+      },
       "destination_network": 0,
       "destination_address": "0x...",
       "amount": "1000000000000000000",
@@ -73,8 +75,10 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
     },
     {
       "leaf_type": 1,
-      "origin_network": 1,
-      "origin_address": "0x...",
+      "token_info": {
+        "origin_network": 1,
+        "origin_token_address": "0x..."
+      },
       "destination_network": 0,
       "destination_address": "0x...",
       "amount": "0",
@@ -88,7 +92,7 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
 The fields are the ones of the bridge's `BridgeEvent`, with the names aggkit uses:
 
 - `leaf_type` — `0` for a `bridgeAsset`, `1` for a `bridgeMessage`.
-- `origin_network`, `origin_address` — for a `bridgeAsset`, the token as the bridge identifies it
+- `token_info` (`origin_network`, `origin_token_address`) — for a `bridgeAsset`, the token as the bridge identifies it
   (`0` / `0x000...000` for ETH); for a `bridgeMessage`, the network and address that sent it.
 - `destination_network`, `destination_address` — where the output goes (`0` is Ethereum; always `0`
   for a `bridgeAsset`).

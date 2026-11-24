@@ -2,10 +2,11 @@
 # Builds a case's recovery.json from the transactions move.sh mined on the shadow-fork: one
 # output per BridgeEvent that the zkEVM bridge emitted in them, in order. Each output is a
 # bridge exit Polygon recovers through the certificate, with the BridgeEvent's fields, named as
-# aggkit's bridgesync names them:
+# aggkit's bridgesync names them (the origin pair grouped as token_info, as in a certificate's
+# bridge exit):
 #   leaf_type            0 bridgeAsset, 1 bridgeMessage
-#   origin_network, origin_address            the token (bridgeAsset; ETH is 0 / 0x0...0) or the
-#                                             sender of the message (bridgeMessage)
+#   token_info           {origin_network, origin_token_address}: the token (bridgeAsset; ETH is
+#                        0 / 0x0...0) or the sender of the message (bridgeMessage)
 #   destination_network, destination_address  where it goes; a bridgeAsset must go to network 0
 #   amount               base units, as a string (ETH carried, for a bridgeMessage)
 #   metadata             hex, as emitted (not decoded)
@@ -99,7 +100,7 @@ for tx in "$@"; do
             --argjson on "${origin_network}" --arg oa "$(cast to-check-sum-address "${origin_address}")" \
             --argjson dn "${destination_network}" --arg da "$(cast to-check-sum-address "${destination_address}")" \
             --arg amount "${amount}" --arg md "${metadata}" --argjson dc "${deposit_count}" \
-            '{leaf_type: $lt, origin_network: $on, origin_address: $oa, destination_network: $dn,
+            '{leaf_type: $lt, token_info: {origin_network: $on, origin_token_address: $oa}, destination_network: $dn,
               destination_address: $da, amount: $amount, metadata: $md, deposit_count: $dc}')"
         outputs="$(jq -c --argjson o "${output}" '. + [$o]' <<<"${outputs}")"
     done <<<"${receipt_data}"

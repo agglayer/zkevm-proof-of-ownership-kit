@@ -93,7 +93,7 @@ plain and step-by-step.
 - `cases/` — `new-case.sh` copies `_template/` to `cases/<case-id>/` per stakeholder (`README.md`,
   `move.sh`, `signatures.json`). `recovery.json` is not in the template: the first run of
   `prepare-submission.sh` generates it from `move.sh` — `{version: 1, outputs: [...]}`, each output
-  `leaf_type` (0 bridgeAsset, 1 bridgeMessage), `origin_network`, `origin_address`,
+  `leaf_type` (0 bridgeAsset, 1 bridgeMessage), `token_info` (`origin_network`, `origin_token_address`),
   `destination_network` (0 for bridgeAsset), `destination_address`, `amount` (string), `metadata`
   (hex, not decoded), `deposit_count`.
 - `submission/` — `prepare-submission.sh` is the one script stakeholders run: it pre-checks the case

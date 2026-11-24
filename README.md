@@ -195,7 +195,7 @@ the last step does it.
 3. **Generate `recovery.json`.** Run step 5's command once: on a fresh fork it runs `move.sh` and
    writes `cases/<your-case-id>/recovery.json` from its `BridgeEvent`s — `{"version": 1, "outputs":
    [...]}`, one output per bridge call with the `BridgeEvent` fields as aggkit names them (`leaf_type`: `0`
-   bridgeAsset, `1` bridgeMessage; `origin_network`, `origin_address`, `destination_network`,
+   bridgeAsset, `1` bridgeMessage; `token_info` (`origin_network`, `origin_token_address`), `destination_network`,
    `destination_address`, `amount`, `metadata`, `deposit_count`). **Check it**: it is what you
    recover. To change it, change `move.sh`, delete `recovery.json` and run again.
 

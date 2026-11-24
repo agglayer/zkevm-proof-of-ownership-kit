@@ -11,7 +11,7 @@
 #   version    1
 #   outputs[]  one per BridgeEvent, in the order move.sh emitted them, with aggkit's names:
 #     { "leaf_type": 0|1 (0 bridgeAsset, 1 bridgeMessage),
-#       "origin_network": <uint32>, "origin_address": "0x...",
+#       "token_info": { "origin_network": <uint32>, "origin_token_address": "0x..." },
 #       "destination_network": <uint32> (0 for a bridgeAsset), "destination_address": "0x...",
 #       "amount": "<base units, as a string>", "metadata": "0x<hex bytes>",
 #       "deposit_count": <uint32> }
@@ -44,8 +44,9 @@ fi
 errors="$(jq -r '
   def addr: type == "string" and test("^0x[0-9a-fA-F]{40}$");
   def uint32: type == "number" and . == floor and . >= 0 and . <= 4294967295;
-  ["leaf_type", "origin_network", "origin_address", "destination_network", "destination_address",
+  ["leaf_type", "token_info", "destination_network", "destination_address",
    "amount", "metadata", "deposit_count"] as $fields
+  | ["origin_network", "origin_token_address"] as $token_fields
   | . as $r
   | if type != "object" then "the top level must be a JSON object"
     else
@@ -60,9 +61,19 @@ errors="$(jq -r '
                 ( ($o | keys_unsorted - $fields)[] | "\($w): unknown field: \(.)" ),
                 ( $fields[] as $k | select(($o | has($k)) | not) | "\($w): missing field: \($k)" ),
                 ( if $o.leaf_type == 0 or $o.leaf_type == 1 then empty else "\($w).leaf_type: must be 0 (bridgeAsset) or 1 (bridgeMessage)" end ),
-                ( ("origin_network", "destination_network", "deposit_count") as $k
+                ( if ($o | has("token_info")) | not then empty
+                  elif ($o.token_info | type) != "object" then "\($w).token_info: must be an object"
+                  else
+                    ( ($o.token_info | keys_unsorted - $token_fields)[] | "\($w).token_info: unknown field: \(.)" ),
+                    ( $token_fields[] as $k | select(($o.token_info | has($k)) | not) | "\($w).token_info: missing field: \($k)" ),
+                    ( if ($o.token_info | has("origin_network") | not) or ($o.token_info.origin_network | uint32) then empty
+                      else "\($w).token_info.origin_network: must be a uint32" end ),
+                    ( if ($o.token_info | has("origin_token_address") | not) or ($o.token_info.origin_token_address | addr) then empty
+                      else "\($w).token_info.origin_token_address: must be an address (0x + 40 hex chars)" end )
+                  end ),
+                ( ("destination_network", "deposit_count") as $k
                   | if ($o[$k] | uint32) then empty else "\($w).\($k): must be a uint32" end ),
-                ( ("origin_address", "destination_address") as $k
+                ( ("destination_address") as $k
                   | if ($o[$k] | addr) then empty else "\($w).\($k): must be an address (0x + 40 hex chars)" end ),
                 ( if ($o.amount | type) == "string" and ($o.amount | test("^(0|[1-9][0-9]*)$")) then empty
                   else "\($w).amount: must be an integer in base units, written as a string" end ),
