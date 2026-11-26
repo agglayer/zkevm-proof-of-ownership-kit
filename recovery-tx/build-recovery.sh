@@ -24,7 +24,13 @@
 # to the first candidate. The outputs credited to a contract may not total more than it lost.
 # No candidate, or a call chain that reaches none, is refused.
 #
-# The result goes to stdout ({"version": 1, "outputs": [...]}); messages go to stderr.
+# A second section, origin_SC_funds, sums the outputs per contract: for each origin_SC_funds (in
+# the order the outputs first name it), the tokens it bridged out (token_info; ETH is 0 / 0x0...0,
+# also when a bridgeMessage carries it) and the total amount of each. Outputs of amount "0" are
+# not in it.
+#
+# The result goes to stdout ({"version": 1, "outputs": [...], "origin_SC_funds": [...]});
+# messages go to stderr.
 # submission/helpers/generate.sh runs this script on a fresh fork.
 #
 # Requires: cast, jq, bc, and an RPC that serves debug_traceTransaction (the shadow-fork does).
@@ -238,6 +244,7 @@ if [ -n "${unresolved}" ]; then
 fi
 
 # The outputs credited to a contract may not total more than it lost.
+: >"${work}/sums.tsv" # asset \t contract \t credited (decimal)
 while IFS=$'\t' read -r asset origin sum; do
     loss="$(awk -F'\t' -v a="${asset}" -v o="${origin}" '$1 == a && $2 == o { print $3 }' "${work}/candidates.tsv")"
     credited="$(printf '%s\n' "${sum}" | bc_run)"
@@ -245,6 +252,7 @@ while IFS=$'\t' read -r asset origin sum; do
         die "the outputs credited to ${origin} total ${credited} of asset ${asset}, but it only lost ${loss} in move.sh."
     fi
     echo "origin_SC_funds ${origin}: ${credited} of asset ${asset} (lost ${loss})" >&2
+    printf '%s\t%s\t%s\n' "${asset}" "${origin}" "${credited}" >>"${work}/sums.tsv"
 done < <(jq -r -s 'map(select(._asset != null)) | group_by([._asset, .origin_SC_funds])[]
     | [.[0]._asset, .[0].origin_SC_funds, (map(.amount) | join("+"))] | @tsv' "${work}/resolved.jsonl")
 
@@ -255,6 +263,20 @@ done >"${work}/checksum.tsv"
 jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: .[1]}) | from_entries' \
     "${work}/checksum.tsv" >"${work}/checksum.json"
 
-jq -c --slurpfile cs "${work}/checksum.json" \
-    'del(._asset, ._chain, ._tx) | .origin_SC_funds = (if .origin_SC_funds == null then null else $cs[0][.origin_SC_funds] end)' \
-    "${work}/resolved.jsonl" | jq -s '{version: 1, outputs: .}'
+jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {key: (.[0] + "|" + .[1]), value: .[2]}) | from_entries' \
+    "${work}/sums.tsv" >"${work}/sums.json"
+
+# shellcheck disable=SC2016  # a jq program
+jq -s --slurpfile cs "${work}/checksum.json" --slurpfile sums "${work}/sums.json" '
+    def uniq: reduce .[] as $v ([]; if any(.[]; . == $v) then . else . + [$v] end);
+    map(select(._asset != null)) as $funded
+    | {version: 1,
+       outputs: map(del(._asset, ._chain, ._tx)
+                    | .origin_SC_funds = (if .origin_SC_funds == null then null else $cs[0][.origin_SC_funds] end)),
+       origin_SC_funds: [$funded | map(.origin_SC_funds) | uniq | .[] as $o
+         | {address: $cs[0][$o],
+            tokens: [$funded | map(select(.origin_SC_funds == $o) | ._asset) | uniq | .[] as $a
+              | {token_info: (if $a == "eth"
+                              then {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}
+                              else ($funded | map(select(._asset == $a)) | first | .token_info) end),
+                 amount: $sums[0][$a + "|" + $o]}]}]}' "${work}/resolved.jsonl"

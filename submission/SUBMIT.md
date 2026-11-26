@@ -17,7 +17,7 @@ Laid out as `<case-id>/`:
 
 | File | What it is |
 | --- | --- |
-| `recovery.json` | What you recover: one output per bridge call of `move.sh`, with the `BridgeEvent` fields (leaf type, origin, destination, amount, metadata) plus `origin_SC_funds`, the contract that held the funds. Generated from the `BridgeEvent`s. |
+| `recovery.json` | What you recover: one output per bridge call of `move.sh`, with the `BridgeEvent` fields (leaf type, origin, destination, amount, metadata) plus `origin_SC_funds`, the contract that held the funds; and an `origin_SC_funds` section listing each of those contracts with the tokens it bridged out and their totals. Generated from the `BridgeEvent`s. |
 | `move.sh` | The simulated recovery that Polygon re-runs on its own fork. |
 | `signatures.json` | One signature per EOA impersonated in `move.sh`, each over the fixed proof message, which includes a hash of `recovery.json` and `move.sh`, the nonce and the date: a signature only counts for those exact files. |
 | `manifest.json` | What the run found: tx hashes, impersonated addresses, nonce, outputs, the bridge's balances before and after, whether it was a test fork, and the sha256 of every file. |

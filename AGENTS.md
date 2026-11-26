@@ -98,7 +98,9 @@ plain and step-by-step.
   `prepare-submission.sh` generates it from `move.sh` — `{version: 1, outputs: [...]}`, each output
   `leaf_type` (`"Transfer"` bridgeAsset, `"Message"` bridgeMessage), `token_info` (`origin_network`, `origin_token_address`),
   `destination_network` (0 for bridgeAsset), `destination_address`, `amount` (string), `metadata`
-  (hex, not decoded), `origin_SC_funds` (null iff amount is "0"); no deposit count.
+  (hex, not decoded), `origin_SC_funds` (null iff amount is "0"); no deposit count. A top-level
+  `origin_SC_funds` section sums the outputs per contract (`[{address, tokens: [{token_info,
+  amount}]}]`; a Message's ETH is token 0 / 0x0...0); the validator recomputes it from the outputs.
 - `submission/` — `prepare-submission.sh` is the one script stakeholders run: it pre-checks the case
   (`move.sh` present and without template placeholders, `recovery.json` valid if present), runs
   `helpers/generate.sh`, packs its output with `helpers/package.sh` and prints where to send the

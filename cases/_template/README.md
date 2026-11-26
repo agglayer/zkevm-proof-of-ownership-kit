@@ -85,6 +85,20 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
       "metadata": "0x...",
       "origin_SC_funds": null
     }
+  ],
+  "origin_SC_funds": [
+    {
+      "address": "0x...",
+      "tokens": [
+        {
+          "token_info": {
+            "origin_network": 0,
+            "origin_token_address": "0x0000000000000000000000000000000000000000"
+          },
+          "amount": "1000000000000000000"
+        }
+      ]
+    }
   ]
 }
 ```
@@ -105,6 +119,11 @@ The fields are the ones of the bridge's `BridgeEvent`, with the names aggkit use
   the one the bridge call came from). `null` when the output moves nothing (`amount` `"0"`). A
   `move.sh` where no contract lost the funds, or a contract is credited more than it lost, is
   refused.
+
+The `origin_SC_funds` section is not a bridge exit: it sums the outputs per contract. One entry per
+contract the funds came from, with each token it bridged out (`token_info`; the ETH a
+`bridgeMessage` carries is `0` / `0x000...000`) and the total `amount`. Outputs of amount `"0"` are
+not in it.
 
 **Check it**: it is what you recover, and what you sign. If it is not what you want, fix `move.sh`,
 delete `recovery.json` and run the command again. Without a fork at hand, check the file's format

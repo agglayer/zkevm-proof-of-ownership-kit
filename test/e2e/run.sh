@@ -267,7 +267,8 @@ jq -e --arg v "$(cs "${VAULT}")" --arg d "$(cs "${DEST}")" --arg amount "${ASSET
     and .outputs[0] == {leaf_type: "Transfer", token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"},
         destination_network: 0, destination_address: $d, amount: $amount, metadata: "0x", origin_SC_funds: $v}
     and .outputs[1] == {leaf_type: "Message", token_info: {origin_network: 1, origin_token_address: $v},
-        destination_network: $mn, destination_address: $d, amount: "0", metadata: $md, origin_SC_funds: null}' "${CASE_DIR}/recovery.json" >/dev/null \
+        destination_network: $mn, destination_address: $d, amount: "0", metadata: $md, origin_SC_funds: null}
+    and .origin_SC_funds == [{address: $v, tokens: [{token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}, amount: $amount}]}]' "${CASE_DIR}/recovery.json" >/dev/null \
     || { cat "${CASE_DIR}/recovery.json" >&2; fail "unexpected recovery.json"; }
 # recovery.json format checks (offline): each broken file must be refused with its reason.
 bad_recovery() { # <description> <jq filter> <expected message>
@@ -284,6 +285,14 @@ bad_recovery "no origin_SC_funds" 'del(.outputs[0].origin_SC_funds)' "outputs[0]
 bad_recovery "a null origin_SC_funds with funds" '.outputs[0].origin_SC_funds = null' "outputs[0].origin_SC_funds: must be an address"
 bad_recovery "a bad origin_SC_funds" '.outputs[0].origin_SC_funds = "0x12"' "outputs[0].origin_SC_funds: must be an address"
 bad_recovery "an origin_SC_funds without funds" '.outputs[1].origin_SC_funds = .outputs[0].origin_SC_funds' "outputs[1].origin_SC_funds: must be null when amount"
+bad_recovery "no origin_SC_funds section" 'del(.origin_SC_funds)' "missing field: origin_SC_funds"
+bad_recovery "an origin_SC_funds section that is not a list" '.origin_SC_funds = {}' "origin_SC_funds: must be a list"
+bad_recovery "an origin_SC_funds entry without tokens" '.origin_SC_funds[0].tokens = []' "origin_SC_funds[0].tokens: must be a non-empty list"
+bad_recovery "an unknown origin_SC_funds field" '.origin_SC_funds[0].lost = "1"' "origin_SC_funds[0]: unknown field: lost"
+bad_recovery "a zero amount in origin_SC_funds" '.origin_SC_funds[0].tokens[0].amount = "0"' "origin_SC_funds[0].tokens[0].amount: must be a positive integer"
+bad_recovery "an origin_SC_funds total that does not match" '.origin_SC_funds[0].tokens[0].amount = "1"' "origin_SC_funds: does not match the outputs"
+bad_recovery "an origin_SC_funds section with another contract" '.origin_SC_funds[0].address = .outputs[0].destination_address' "origin_SC_funds: does not match the outputs"
+bad_recovery "an output origin that the section does not list" '.outputs[0].origin_SC_funds = .outputs[0].destination_address' "origin_SC_funds: does not match the outputs"
 bad_recovery "a deposit_count" '.outputs[0].deposit_count = 0' "outputs[0]: unknown field: deposit_count"
 bad_recovery "an unknown leaf type" '.outputs[0].leaf_type = "Asset"' "leaf_type: must be \"Transfer\""
 bad_recovery "a numeric leaf type" '.outputs[0].leaf_type = 0' "leaf_type: must be \"Transfer\""
@@ -396,7 +405,7 @@ grep -q "non-standard fork configuration" "${WORKDIR}/neg.out" || fail "expected
 # Negative: a recovery.json that differs from what move.sh bridges.
 CASE_DIFF="${WORKDIR}/case-diff"
 cp -r "${CASE_DIR}" "${CASE_DIFF}"
-jq '.outputs[0].amount = "1"' "${CASE_DIR}/recovery.json" >"${CASE_DIFF}/recovery.json"
+jq '.outputs[0].amount = "1" | .origin_SC_funds[0].tokens[0].amount = "1"' "${CASE_DIR}/recovery.json" >"${CASE_DIFF}/recovery.json"
 expect_fail "prepare-submission.sh rejects a recovery.json that differs from what move.sh does" \
     pkg "${CASE_DIFF}" --allow-test-fork --output-dir "${OUT_DIR}"
 grep -q "does not match what move.sh does" "${WORKDIR}/neg.out" || fail "expected the mismatch message"
@@ -574,7 +583,9 @@ pkg "${CASE_TOKENS}" --allow-test-fork --output-dir "${WORKDIR}/out-tokens" >"${
     || { cat "${WORKDIR}/package-tokens.out" >&2; fail "packaging the token case failed"; }
 jq -e --arg l1 "$(cs "${L1_TOKEN}")" --arg v "$(cs "${VAULT}")" '(.outputs | length) == 2
     and (.outputs[0] | .leaf_type == "Transfer" and .token_info == {origin_network: 0, origin_token_address: $l1} and .amount == "200" and .origin_SC_funds == $v)
-    and (.outputs[1] | .leaf_type == "Message" and .token_info.origin_token_address == $v and .amount == "7" and .metadata == "0x" and .origin_SC_funds == $v)' \
+    and (.outputs[1] | .leaf_type == "Message" and .token_info.origin_token_address == $v and .amount == "7" and .metadata == "0x" and .origin_SC_funds == $v)
+    and .origin_SC_funds == [{address: $v, tokens: [{token_info: {origin_network: 0, origin_token_address: $l1}, amount: "200"},
+                                                    {token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}, amount: "7"}]}]' \
     "${CASE_TOKENS}/recovery.json" >/dev/null || { cat "${CASE_TOKENS}/recovery.json" >&2; fail "unexpected recovery.json for the token case"; }
 mkdir -p "${WORKDIR}/unpacked-tokens"
 tar -xzf "${WORKDIR}"/out-tokens/case-tokens-*.tgz -C "${WORKDIR}/unpacked-tokens"
@@ -657,7 +668,9 @@ new_case "${CASE_MULTI}"
 expect_fail "prepare-submission.sh writes recovery.json for two vaults, then asks for the owner's signature" \
     pkg "${CASE_MULTI}" --allow-test-fork --output-dir "${WORKDIR}/out-multi"
 jq -e --arg v "$(cs "${VAULT}")" --arg v2 "$(cs "${VAULT2}")" \
-    '[.outputs[].origin_SC_funds] == [$v, null, $v2, null]' "${CASE_MULTI}/recovery.json" >/dev/null \
+    '[.outputs[].origin_SC_funds] == [$v, null, $v2, null]
+    and .origin_SC_funds == [{address: $v, tokens: [{token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}, amount: "500000000000000000"}]},
+                             {address: $v2, tokens: [{token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}, amount: "500000000000000000"}]}]' "${CASE_MULTI}/recovery.json" >/dev/null \
     || { cat "${CASE_MULTI}/recovery.json" >&2; fail "unexpected origin_SC_funds with two vaults"; }
 echo "  origin_SC_funds per bridge call with two vaults"
 
