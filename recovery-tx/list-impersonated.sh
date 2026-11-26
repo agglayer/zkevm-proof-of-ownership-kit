@@ -105,4 +105,3 @@ fi
 
 echo
 echo "Every entry in ${signatures_path} is a valid signature, and every EOA sender is covered."
-echo "(Remember: the destination EOA also needs a signature — this check only covers senders.)"

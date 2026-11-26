@@ -1,6 +1,6 @@
 #!/bin/bash
 # Starts a new recovery case: copies cases/_template/ to cases/<case-id>/ (move.sh,
-# recovery.json, signatures.json, README.md) and tells you what to fill in next.
+# signatures.json, README.md) and tells you what to fill in next.
 #
 # <case-id> is anything easy to reference back to your support conversation (a Slack
 # thread id, your project name...): letters, digits, '.', '_' and '-'.
@@ -31,13 +31,13 @@ fi
 cp -R "${script_dir}/_template" "${case_dir}"
 
 echo "Created cases/${case_id}/. Next:"
-echo "  1. Fill in cases/${case_id}/recovery.json — which funds you want to recover from"
-echo "     which locked contract, and to which final wallet — and check it with:"
-echo "       ./recovery-tx/validate-recovery.sh cases/${case_id}/recovery.json"
-echo "  2. Fill in cases/${case_id}/move.sh (the simulated recovery)."
+echo "  1. Fill in cases/${case_id}/move.sh (the simulated recovery): it moves your locked funds"
+echo "     into the bridge (bridgeAsset / bridgeMessage)."
+echo "  2. Run ./submission/prepare-submission.sh cases/${case_id} — it writes"
+echo "     cases/${case_id}/recovery.json from the BridgeEvents of move.sh. Check it."
 echo "  3. Once recovery.json and move.sh are FINAL, fill in cases/${case_id}/signatures.json: one"
 echo "     signature, made with ownership-proof/sign-message.sh (same NONCE for all), for every EOA"
-echo "     that move.sh impersonates and for your destination wallet. The signed message includes a"
-echo "     hash of recovery.json and move.sh: if either changes later, sign everything again."
-echo "  4. Run ./submission/prepare-submission.sh cases/${case_id} — it checks everything and"
+echo "     that move.sh impersonates. The signed message includes a hash of recovery.json and"
+echo "     move.sh: if either changes later, sign everything again."
+echo "  4. Run ./submission/prepare-submission.sh cases/${case_id} again — it checks everything and"
 echo "     builds the .tgz. Full walkthrough: cases/${case_id}/README.md."

@@ -11,8 +11,8 @@ cases/new-case.sh <your-case-id>
 back to your support conversation (letters, digits, `.`, `_`, `-`). Plain
 `cp -r cases/_template cases/<your-case-id>` does the same.
 
-Each case holds `recovery.json` (which funds you want to recover, from which locked
-contract, to which final wallet), `move.sh` (the simulated recovery), `signatures.json`
-(the ownership proofs) and a step-by-step `README.md`.
+Each case holds `move.sh` (the simulated recovery: it moves the locked funds into the bridge),
+`signatures.json` (the ownership proofs) and a step-by-step `README.md`. `recovery.json` (the
+outputs you recover) is generated from `move.sh` by `submission/prepare-submission.sh`.
 
 Full walkthrough: [`_template/README.md`](_template/README.md).

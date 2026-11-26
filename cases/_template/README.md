@@ -5,39 +5,22 @@ Create your case from the repo root with `cases/new-case.sh <your-case-id>` (e.g
 `cases/<your-case-id>/` (a plain `cp -r` works too). Edit your copy — leave
 `cases/_template/` itself untouched so other stakeholders can copy it too.
 
-## 1. Declare what you recover, then fill in move.sh
+## 1. Fill in move.sh
 
-First, fill in `recovery.json` in your case directory: the explicit statement of what
-you want to recover and where it should end up. Polygon checks the simulation against it.
+Edit `move.sh` in your case directory: replace the TODO addresses and the `cast send` call with
+whatever **moves your locked funds into the zkEVM bridge** (`0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe`):
 
-```json
-{
-  "locked_contract": "0x...",
-  "destination": "0x...",
-  "funds": [
-    { "token": "native", "amount": "1000000000000000000" },
-    { "token": "0x...", "amount": "5000000", "symbol": "USDC" }
-  ]
-}
-```
+- `bridgeAsset` to network `0` (Ethereum) for ETH or a token, to the address that receives it there;
+- `bridgeMessage` for a message to another network (it can carry ETH as value).
 
-- `locked_contract` — the Smart Contract holding the funds.
-- `destination` — the final wallet (EOA) that receives them; it must sign too (step 2).
-- `funds` — one entry per asset: `"native"` or the token's address, and the `amount` in
-  base units (wei for ETH) **as a string**. List each token once; add the amounts up.
-
-Check it (from the repo root):
-
-```bash
-./recovery-tx/validate-recovery.sh cases/<your-case-id>/recovery.json
-```
-
-Then edit `move.sh` in your case directory: replace the TODO addresses and the `cast send`
-call with whatever actually moves your locked funds to your destination EOA. See
+Each call is one **output** of your recovery: what Polygon recovers through the certificate. Call it
+as many times as you need. The bridge can be called by the locked contract itself (through its own
+logic, e.g. an `execute` function called by its owner) or by an EOA the funds were moved to first
+(e.g. a `withdraw` to the owner, who then calls `bridgeAsset`). See
 [`../../recovery-tx/impersonate-and-move.template.sh`](../../recovery-tx/impersonate-and-move.template.sh)
 for the annotated template this was copied from.
 
-You don't need to run it yourself: `submission/prepare-submission.sh` (step 4) starts a fresh
+You don't need to run it yourself: `submission/prepare-submission.sh` (step 2) starts a fresh
 shadow-fork and runs `move.sh` on it. If you want to try it first, start a fork in its own
 terminal (`cd setup && cp .env.example .env && source .env && ./fork.sh`, see the repo README),
 leave it running and, from the repo root:
@@ -46,7 +29,7 @@ leave it running and, from the repo root:
 ./recovery-tx/run.sh cases/<your-case-id>/move.sh
 ```
 
-Stop that fork before step 4 (Ctrl-C in its terminal, or `docker rm -f zkevm-shadow-fork-8545`):
+Stop that fork before step 2 (Ctrl-C in its terminal, or `docker rm -f zkevm-shadow-fork-8545`):
 `prepare-submission.sh` starts its own fresh one on the same port and refuses to run while
 something answers there.
 
@@ -61,19 +44,96 @@ the result is exactly what the transactions do. Gas is free on the fork: an impe
 needs no ETH to send. The same
 sandbox is used when Polygon verifies your submission.
 
-If you ran it, note the transaction hash it prints — you can use it in step 3.
+If you ran it, note the transaction hashes it prints — you can use them in step 4.
 
-## 2. Sign the ownership-proof message
+## 2. Generate recovery.json
 
-**Sign last:** the signed message carries the locked contract, the destination and a hash of your
-`recovery.json` and `move.sh`, so a signature only counts for those exact files. If you change either
-file afterwards — even a space — every signature is invalid and you must sign again (empty
-`signatures.json` with `echo '[]' > cases/<your-case-id>/signatures.json`, then every address). Read
-`move.sh` before signing: by signing you approve that script, and check the destination in the message.
+`recovery.json` is the list of outputs you recover. You don't write it: run, from the repo root,
 
-For every EOA impersonated in `move.sh`, **and** for your destination EOA, sign the
-proof message. Contracts impersonated in `move.sh` have no private key — sign instead
-with the EOA(s) that control them on-chain (owner, multisig signers, admin).
+```bash
+./submission/prepare-submission.sh cases/<your-case-id>
+```
+
+On a fresh fork, it runs `move.sh` and writes `cases/<your-case-id>/recovery.json` from the bridge
+calls it made (then it stops and asks for the signatures of step 3). It looks like:
+
+```json
+{
+  "version": 1,
+  "outputs": [
+    {
+      "leaf_type": "Transfer",
+      "token_info": {
+        "origin_network": 0,
+        "origin_token_address": "0x0000000000000000000000000000000000000000"
+      },
+      "destination_network": 0,
+      "destination_address": "0x...",
+      "amount": "1000000000000000000",
+      "metadata": "0x"
+    },
+    {
+      "leaf_type": "Message",
+      "token_info": {
+        "origin_network": 1,
+        "origin_token_address": "0x..."
+      },
+      "destination_network": 0,
+      "destination_address": "0x...",
+      "amount": "0",
+      "metadata": "0x..."
+    }
+  ],
+  "origin_SC_funds": [
+    {
+      "address": "0x...",
+      "tokens": [
+        {
+          "token_info": {
+            "origin_network": 0,
+            "origin_token_address": "0x0000000000000000000000000000000000000000"
+          },
+          "amount": "1000000000000000000"
+        }
+      ]
+    }
+  ]
+}
+```
+
+The fields are the ones of the bridge's `BridgeEvent`, with the names aggkit uses:
+
+- `leaf_type` — `"Transfer"` for a `bridgeAsset`, `"Message"` for a `bridgeMessage` (as agglayer labels them).
+- `token_info` (`origin_network`, `origin_token_address`) — for a `bridgeAsset`, the token as the bridge identifies it
+  (`0` / `0x000...000` for ETH); for a `bridgeMessage`, the network and address that sent it. A
+  `bridgeAsset` of a token native to zkEVM (origin network `1`) is refused: only ETH and wrapped
+  tokens can be recovered.
+- `destination_network`, `destination_address` — where the output goes (`0` is Ethereum; always `0`
+  for a `bridgeAsset`).
+- `amount` — in base units (wei for ETH), as a string; for a `bridgeMessage`, the ETH it carries.
+- `metadata` — as emitted, not decoded (the message bytes of a `bridgeMessage`).
+The `origin_SC_funds` section is not a bridge exit: it lists the contracts that held the funds
+before `move.sh` ran, each with the tokens it bridged out (`token_info`; the ETH a `bridgeMessage`
+carries is `0` / `0x000...000`) and the total `amount` of each. Each output's contract is found by
+balance diff (the contract whose balance of that token went down; if several did, the one the
+bridge call came from). A `move.sh` where no contract lost the funds, or a contract is credited
+more than it lost, is refused.
+
+**Check it**: it is what you recover, and what you sign. If it is not what you want, fix `move.sh`,
+delete `recovery.json` and run the command again. Without a fork at hand, check the file's format
+with `./recovery-tx/validate-recovery.sh cases/<your-case-id>/recovery.json`.
+
+## 3. Sign the ownership-proof message
+
+**Sign last:** the signed message carries a hash of your `recovery.json` and `move.sh`, so a signature
+only counts for those exact files. If you change either file afterwards — even a space — every
+signature is invalid and you must sign again (empty `signatures.json` with
+`echo '[]' > cases/<your-case-id>/signatures.json`, then every address). Read `move.sh` and
+`recovery.json` before signing: by signing you approve them.
+
+For every EOA impersonated in `move.sh`, sign the proof message. Contracts impersonated in
+`move.sh` have no private key — sign instead with the EOA(s) that control them on-chain (owner,
+multisig signers, admin).
 
 Use the exact same `NONCE` for every signature in this case — it's what lets Polygon
 match all the signatures to the same submission. The nonce is just a label: any short string
@@ -113,13 +173,13 @@ Keep the Etherscan link for your submission.
 [
   {
     "address": "0x...",
-    "message": "I confirm ownership of 0x... for zkEVM fund recovery — locked contract: 0x... — destination: 0x... — case hash: ... — nonce: ... — date: ...",
+    "message": "I confirm ownership of 0x... for zkEVM fund recovery — case hash: ... — nonce: ... — date: ...",
     "signature": "0x..."
   }
 ]
 ```
 
-## 3. (Optional) Double-check you didn't miss a signature
+## 4. (Optional) Double-check you didn't miss a signature
 
 From the repo root, pass every tx hash `move.sh` printed:
 
@@ -131,13 +191,14 @@ This reads each transaction's mined receipt to find who actually sent it, verifi
 every signature in `signatures.json` (via `ownership-proof/verify-signature.sh`, the same
 check Polygon runs on your submission), and fails loudly if any entry is invalid or any
 EOA sender is still missing. Contract senders are listed separately, as a reminder to
-cover them with their controlling EOAs' signatures. It only checks senders, though —
-it can't know about your destination EOA (it never sends anything), so that signature
-is still on you to remember.
+cover them with their controlling EOAs' signatures.
 
-## 4. Package and submit
+With the same tx hashes, `./recovery-tx/build-recovery.sh <tx-hash> ...` prints the `recovery.json`
+they give (it needs the fork they ran on).
 
-`submission/prepare-submission.sh` does the checks of steps 1 to 3 for you, guides you through what is missing and packages the result. It starts a
+## 5. Package and submit
+
+`submission/prepare-submission.sh` does the checks of steps 2 to 4 for you, guides you through what is missing and packages the result. It starts a
 **fresh fork** itself (with `setup/fork.sh`, using the same `L2_RPC_URL`... settings; `source setup/.env`
 first if you use one) and stops it when it ends, so stop any fork you have running on the
 same port before. Run, from the repo root:
@@ -146,10 +207,9 @@ same port before. Run, from the repo root:
 ./submission/prepare-submission.sh cases/<your-case-id>
 ```
 
-It validates `recovery.json`, runs `move.sh`, checks that the funds declared in
-`recovery.json` really moved from the locked contract to your destination, works out
-which EOAs were impersonated, checks that `signatures.json` (filled in beforehand, step 2) has a valid signature for each of them and for the
-destination, writes `cases/<your-case-id>/<your-case-id>-<timestamp>.tgz` and tells you
+It runs `move.sh`, checks that its bridge calls give exactly your `recovery.json` (each called by a
+locked contract, not by an impersonated address), works out which EOAs were impersonated, checks
+that `signatures.json` (filled in beforehand, step 3) has a valid signature for each of them, writes `cases/<your-case-id>/<your-case-id>-<timestamp>.tgz` and tells you
 where to send it and how to verify it. It never
 signs: if a signature is missing it stops and prints the exact command to make it; sign,
 run it again. (The scripts in `submission/helpers/` are the steps it runs; you don't need to call them.)

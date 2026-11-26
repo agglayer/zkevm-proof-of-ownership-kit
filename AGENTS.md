@@ -61,8 +61,10 @@ https://context7.com/install
 
 Self-service toolkit for stakeholders whose funds are locked in Smart Contracts on the halted
 Polygon zkEVM mainnet. A stakeholder runs an Anvil shadow-fork of the halt state, simulates the
-transactions that would move their funds to an EOA they control (impersonating whatever addresses
-are needed), then proves ownership by signing a fixed message with every EOA involved. Polygon
+transactions that would recover their funds (impersonating whatever addresses
+are needed) so that the locked funds go into the zkEVM bridge (`bridgeAsset` / `bridgeMessage`),
+then proves ownership by signing a fixed message with every EOA involved. Each `BridgeEvent` becomes
+one output (bridge exit) of the case's `recovery.json`. Polygon
 verifies the submission and, separately, issues an ad-hoc recovery certificate.
 
 The kit **only simulates and proves** — it never moves real funds, never talks to L1, and does not
@@ -75,28 +77,41 @@ plain and step-by-step.
   the optional overrides (`L2_RPC_URL`, `ANVIL_PORT`, `BLOCK_TIME`, `ANVIL_IMAGE`, `FORK_LOG`, test-only `FORK_BLOCK`). `fork.sh`
   also saves its full output to `setup/fork.log`, unmasked: a submission must fork from the official RPC `https://zkevm-rpc.com/`, and `helpers/generate.sh` refuses another `L2_RPC_URL` or a `FORK_BLOCK` unless `--allow-test-fork` (the package is then marked `test_fork`), so the log has no API key.
 - `recovery-tx/` — `impersonate-and-move.template.sh` (annotated template), `run.sh` (runs a
-  case's `move.sh` against the fork, inside a sandbox container), `validate-recovery.sh` (offline check of a case's
-  `recovery.json`), `list-impersonated.sh` (derives senders from receipts and
-  verifies a case's `signatures.json`).
-- `ownership-proof/` — `message-template.txt` (the fixed proof message, bound to the case: locked
-  contract, destination and case hash), `case-hash.sh` (the case hash: sha256 of the sha256 lines of
+  case's `move.sh` against the fork, inside a sandbox container), `build-recovery.sh` (builds
+  `recovery.json` from tx hashes: one output per `BridgeEvent` of the zkEVM bridge, with
+  aggkit's bridgesync names for the event's fields, plus a top-level `origin_SC_funds` section
+  (per output, the contract that paid, by balance diff over the call traces and Transfer logs: the
+  contract that lost that asset; with several, the first one up the bridge call's call chain;
+  refused if none, or if a contract is credited more than it lost; then summed per contract);
+  refuses bridgeAsset to
+  a network other than 0 and of a token native to the chain (origin network = the bridge's `networkID()`); `BRIDGE_ADDRESS` is a test-only override), `validate-recovery.sh` (offline check of a case's `recovery.json`; its schema
+  lives there), `list-impersonated.sh` (derives senders from receipts and verifies a case's
+  `signatures.json`).
+- `ownership-proof/` — `message-template.txt` (the fixed proof message, bound to the case by the
+  case hash), `case-hash.sh` (the case hash: sha256 of the sha256 lines of
   `recovery.json` and `move.sh`), `sign-message.sh` (EIP-191 signing via hardware wallet / keystore /
-  hidden prompt, or `--print-message` for Etherscan Verified Signatures; fills the message from the
-  case's `recovery.json` and `move.sh`), and `verify-signature.sh` (verifies every entry of a
+  hidden prompt, or `--print-message` for Etherscan Verified Signatures; fills the message with the case
+  hash of the case's `recovery.json` and `move.sh`), and `verify-signature.sh` (verifies every entry of a
   `signatures.json` against its case directory; the single source of the signature rules, also called
   by `list-impersonated.sh` and `generate.sh`).
 - `cases/` — `new-case.sh` copies `_template/` to `cases/<case-id>/` per stakeholder (`README.md`,
-  `recovery.json`, `move.sh`, `signatures.json`). `recovery.json` is the explicit claim — locked
-  contract, funds (token + amount in base units, as a string) and destination wallet; its schema
-  lives in `recovery-tx/validate-recovery.sh`.
+  `move.sh`, `signatures.json`). `recovery.json` is not in the template: the first run of
+  `prepare-submission.sh` generates it from `move.sh` — `{version: 1, outputs: [...]}`, each output
+  `leaf_type` (`"Transfer"` bridgeAsset, `"Message"` bridgeMessage), `token_info` (`origin_network`, `origin_token_address`),
+  `destination_network` (0 for bridgeAsset), `destination_address`, `amount` (string), `metadata`
+  (hex, not decoded); no deposit count. A top-level `origin_SC_funds` section lists the contracts
+  that held the funds (`[{address, tokens: [{token_info, amount}]}]`; a Message's ETH is token
+  0 / 0x0...0); the validator checks that, per token, it totals the outputs.
 - `submission/` — `prepare-submission.sh` is the one script stakeholders run: it pre-checks the case
-  (files present, `move.sh` without template placeholders, `recovery.json` valid), runs
+  (`move.sh` present and without template placeholders, `recovery.json` valid if present), runs
   `helpers/generate.sh`, packs its output with `helpers/package.sh` and prints where to send the
   `.tgz` and how to verify it. `helpers/generate.sh` runs a case against the fork and checks it:
-  validates `recovery.json`, checks `fork.log`, runs `move.sh`, compares the balances of the locked
-  contract and the destination with the declared funds (amounts through `bc`: they are 256-bit),
-  derives the senders from the mined blocks, requires a valid signature in the (pre-filled)
-  `signatures.json` for every EOA sender plus the destination — it never signs, it prints the
+  validates `recovery.json` (if present), checks `fork.log`, runs `move.sh`, derives the senders from
+  the mined blocks, builds the outputs with `build-recovery.sh`, checks per token that the bridge's balance grew
+  (ETH) or the wrapped token's supply shrank by exactly the bridged amount
+  (amounts through `bc`: they are 256-bit), writes `recovery.json` into the case when it is missing
+  or else requires it to equal the built one (`jq -S`), requires a valid signature in the (pre-filled)
+  `signatures.json` for every EOA sender — it never signs, it prints the
   `sign-message.sh` commands for the missing ones — and writes the files plus `manifest.json` (sha256
   of each file) to an output dir. It starts a fresh fork with `setup/fork.sh` and stops it on exit
   (it refuses to run if something already answers on `RPC_URL`'s port). It is also what a verifier runs to check that `move.sh`,
@@ -104,8 +119,8 @@ plain and step-by-step.
   into `<case-id>-<timestamp>.tgz`. `verify-submission.sh <tgz>` is the Polygon-side check (also runnable
   by the stakeholder): it unpacks the `.tgz` safely (untrusted: one `<case-id>/` folder, regular files,
   no `..`), checks the manifest sha256s, re-runs the case on a fresh fork through `helpers/generate.sh`
-  (recovery.json, impersonated senders, signatures) and compares locked contract, destination, nonce,
-  fork block, senders and amounts with `manifest.json` (not tx hashes/gas). The packaged `move.sh`
+  (recovery.json, impersonated senders, signatures) and compares outputs, balances, nonce,
+  fork block and senders with `manifest.json` (not tx hashes/gas). The packaged `move.sh`
   runs in the sandbox (see the invariants). `SUBMIT.md` says what the stakeholder sends back to Polygon (the `.tgz`, plus the email) and what is in it.
 - `test/e2e/` — end-to-end test (geth `--dev` in Docker + `setup/fork.sh` + a whole case through
   `prepare-submission.sh`), run by `.github/workflows/e2e.yml`.
@@ -127,13 +142,13 @@ All commands run from the **repo root**.
 #    prepare-submission.sh (step 5) starts its own fork, so you don't need this for the submission.
 cd setup && cp .env.example .env && source .env && ./fork.sh
 
-# 2. Start a case and fill in cases/<case-id>/move.sh
+# 2. Start a case and fill in cases/<case-id>/move.sh (it moves the locked funds into the bridge)
 cases/new-case.sh <case-id>
-#    fill in cases/<case-id>/recovery.json, then check it:
-./recovery-tx/validate-recovery.sh cases/<case-id>/recovery.json
 ./recovery-tx/run.sh cases/<case-id>/move.sh
+#    recovery.json from the tx hashes it printed (on that fork), or let step 5 write it:
+./recovery-tx/build-recovery.sh <tx-hash> ... > cases/<case-id>/recovery.json
 
-# 3. Sign — once per EOA sender and once for the destination EOA, same NONCE for the whole case
+# 3. Sign — once per EOA sender, same NONCE for the whole case
 ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/signatures.json --ledger
 #    (or --trezor | --account <name> | --keystore <path> | --interactive)
 #    No terminal? ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh --print-message
@@ -145,7 +160,8 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 
 # 5. Package. It starts (and afterwards stops) its own fresh fork — stop the one from step 1 first
 #    (it refuses to run while something answers on the port). It repeats steps 2-4
-#    itself, fails listing the signatures missing from signatures.json and writes the .tgz to
+#    itself (writing recovery.json if missing), fails listing the signatures missing from
+#    signatures.json and writes the .tgz to
 #    submit, then says where to send it; see submission/SUBMIT.md.
 #    Only check (no .tgz): ./submission/helpers/generate.sh cases/<case-id>
 ./submission/prepare-submission.sh cases/<case-id>
@@ -172,11 +188,14 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
   the EOA(s) that control it on-chain. `list-impersonated.sh` lists contract senders (non-empty
   `cast code`, decided on the state before `move.sh`) separately instead of requiring a signature for
   them, and `verify-submission.sh` then ends with "MANUAL REVIEW REQUIRED" and exit code 3 instead of a
-  plain `VERIFIED` (nothing automatic proves who controls a contract). **The locked contract itself can
-  never be a sender** (`generate.sh` fails): it would move the funds with no signature at all.
+  plain `VERIFIED` (nothing automatic proves who controls a contract). That includes impersonating the
+  locked contract itself.
+- **`recovery.json` is derived, never trusted.** It is generated from the `BridgeEvent`s of a fresh
+  run of `move.sh`, and a submitted one must equal what a fresh run gives. Don't add a path that
+  accepts hand-written outputs or a non-default `BRIDGE_ADDRESS` without `--allow-test-fork`.
 - **The proof message is fixed.** `message-template.txt` must stay identical to the copies in
-  `README.md` and `cases/_template/README.md` (it carries the locked contract, the destination and the
-  case hash, so signatures are bound to a case's `recovery.json` and `move.sh`). Changing it invalidates every signature already
+  `README.md` and `cases/_template/README.md` (it carries the case hash, so signatures are bound to a
+  case's `recovery.json` and `move.sh`). Changing it invalidates every signature already
   collected, so treat it as a breaking change and ask first.
 - **`halt_block=33391890` is the network's halt block.** `FORK_BLOCK` can override it for tests only (it
   prints a warning, kept in `fork.log`). Either way it is re-verified against the RPC on every
@@ -184,8 +203,8 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 - **RPC responses are untrusted input.** Validate them (e.g. regex-check hex quantities) before
   using them in arithmetic or commands — Bash `$(( ))` evaluates variable contents recursively.
 - **A signature only counts if it verifies.** `verify-signature.sh` requires `message` to be
-  exactly the template filled in with the entry's own address, the case's `locked_contract` and
-  `destination` and the case hash of its `recovery.json` + `move.sh` (so a signature cannot be reused
+  exactly the template filled in with the entry's own address and the case hash of its
+  `recovery.json` + `move.sh` (so a signature cannot be reused
   in another case, nor after a file changed), `cast wallet verify` to recover that address from
   `signature`, one shared nonce per file, and no duplicate addresses. Keep these rules in that one
   script — don't reimplement them elsewhere.
@@ -235,10 +254,10 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 - `cast` reads `ETH_RPC_URL`, **not** `RPC_URL`. The scripts pass `--rpc-url "${RPC_URL}"`
   explicitly; ad-hoc `cast` calls in tests need `ETH_RPC_URL` or `--rpc-url`, otherwise they
   silently hit `localhost:8545`.
+- `build-recovery.sh` needs `debug_traceTransaction` with callTracer `withLog` (the Anvil fork
+  serves it).
 - `fork.sh` refuses to start if the RPC's latest block isn't the halt block — that's intended, not
   a bug to work around.
-- `list-impersonated.sh` only sees transaction senders; the destination EOA never sends anything,
-  so its signature can't be cross-checked as "required" (it is still verified if present).
 - The date in the signed message is the signing day (UTC), so `--print-message` output should be
   signed the same day.
 
@@ -246,12 +265,12 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 
 |                                     When this changes…                                     |                                                                                                           Also update…                                                                                                           |
 | :----------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-|                           `ownership-proof/message-template.txt`                           | `README.md` (Message format), `cases/_template/README.md` example entry, `verify-signature.sh` (assumes placeholder order address → locked_contract → destination → case_hash → nonce → date), `case-hash.sh`, `sign-message.sh` |
+|                           `ownership-proof/message-template.txt`                           |                 `README.md` (Message format), `cases/_template/README.md` example entry, `verify-signature.sh` (assumes placeholder order address → case_hash → nonce → date), `case-hash.sh`, `sign-message.sh`                 |
 |                            `sign-message.sh` flags or env vars                             |                                                                              `README.md`, `cases/_template/README.md`, `AGENTS.md` workflow section                                                                              |
-|              `list-impersonated.sh` / `verify-signature.sh` checks or output               |                                                                             `cases/_template/README.md` step 3, `submission/SUBMIT.md`, `AGENTS.md`                                                                              |
+|              `list-impersonated.sh` / `verify-signature.sh` checks or output               |                                                                             `cases/_template/README.md` step 4, `submission/SUBMIT.md`, `AGENTS.md`                                                                              |
 |                                `fork.sh` behavior or output                                |                                                                           `README.md` (Running the shadow-fork), `submission/SUBMIT.md` fork-logs item                                                                           |
 |                       `recovery-tx/impersonate-and-move.template.sh`                       |                                                                                          `cases/_template/move.sh` (keep them in sync)                                                                                           |
-|                      `recovery.json` fields (`validate-recovery.sh`)                       |                                                           `cases/_template/recovery.json` and README step 1, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                                                            |
+|            `recovery.json` fields (`validate-recovery.sh`, `build-recovery.sh`)            |                             `build-recovery.sh` and `validate-recovery.sh` (keep in sync), `cases/_template/README.md` step 2, `README.md`, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                             |
 | `submission/prepare-submission.sh` / `verify-submission.sh` / `helpers/*` checks or output |                                                      `submission/SUBMIT.md` (contents table), `cases/_template/README.md` step 5, `test/e2e/run.sh` steps 8-9, `AGENTS.md`                                                       |
 |                              Files added/removed/implemented                               |                                                                                       `README.md` layout, `AGENTS.md` Repository Structure                                                                                       |
-|                                  What stakeholders submit                                  |                                                           `submission/SUBMIT.md`, `cases/_template/README.md` step 4, `submission/helpers/` (package layout, manifest)                                                           |
+|                                  What stakeholders submit                                  |                                                           `submission/SUBMIT.md`, `cases/_template/README.md` step 5, `submission/helpers/` (package layout, manifest)                                                           |

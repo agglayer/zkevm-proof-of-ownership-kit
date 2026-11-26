@@ -5,24 +5,30 @@
 # directory with helpers/package.sh; run this one alone to just check that move.sh,
 # recovery.json and signatures.json fit together (e.g. when verifying a case).
 #
-# Inputs, both filled in beforehand in cases/<case-id>/:
-#   recovery.json    the funds, the locked contract and the destination wallet
-#   signatures.json  one signature per EOA that move.sh impersonates plus the destination
-#                    (made with ownership-proof/sign-message.sh, one shared nonce, AFTER
-#                    recovery.json and move.sh were final: the signed message carries their hash)
+# Inputs in cases/<case-id>/:
+#   move.sh          the simulated recovery: it ends with calls to the bridge (bridgeAsset /
+#                    bridgeMessage), from the locked contract or from wherever its funds were moved
+#   recovery.json    the outputs (bridge exits) to recover. If it is missing, this script
+#                    generates it from the BridgeEvents of move.sh (recovery-tx/build-recovery.sh)
+#                    and writes it to the case; if it is there, it must be exactly what move.sh gives
+#   signatures.json  one signature per EOA that move.sh impersonates (made with
+#                    ownership-proof/sign-message.sh, one shared nonce, AFTER recovery.json and
+#                    move.sh were final: the signed message carries their hash)
 #
 # What it does, in order (it stops at the first problem, with what to do next):
-#   1. validates cases/<case-id>/recovery.json (recovery-tx/validate-recovery.sh);
+#   1. validates cases/<case-id>/recovery.json if there is one (recovery-tx/validate-recovery.sh);
 #   2. starts a fresh shadow-fork (setup/fork.sh, stopped again on exit) and checks it:
-#      the fork log confirms the halt block, the RPC is up and the locked contract holds
-#      the declared funds;
+#      the fork log confirms the halt block and the RPC is up;
 #   3. runs the case's move.sh against the fork (recovery-tx/run.sh) and collects every
 #      transaction it mined;
-#   4. checks the simulation against recovery.json: for each declared fund, the locked
-#      contract lost exactly that amount and the destination gained exactly that amount;
+#   4. builds the outputs from the BridgeEvents of those transactions
+#      (recovery-tx/build-recovery.sh), checks that the bridge really took what they say (per
+#      token: the bridge's ETH / token balance grew, or the wrapped token's supply shrank, by
+#      exactly the amount bridged), then writes recovery.json if the case had none, or requires
+#      the case's recovery.json to be identical;
 #   5. works out which EOAs were impersonated (the senders) and requires a valid signature
-#      in signatures.json for each of them plus the destination. It never signs: if some
-#      are missing it prints the commands to sign them and fails;
+#      in signatures.json for each of them. It never signs: if some are missing it prints
+#      the commands to sign them and fails;
 #   6. writes the files and manifest.json (with the sha256 of each file) to the output dir.
 #
 # Requires: cast, jq, curl, bc (and sha256sum or shasum), and docker for the fork.
@@ -48,6 +54,8 @@
 #   FORK_LOG   where the fork's log is written (default: setup/fork.log)
 #   NONCE      the nonce suggested in the signing commands when signatures.json is still
 #              empty (default: generated). Once it has entries, their nonce is used.
+#   BRIDGE_ADDRESS  TESTING ONLY (needs --allow-test-fork): another bridge contract than the
+#              zkEVM bridge (see recovery-tx/build-recovery.sh)
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -135,19 +143,6 @@ require_uint() {
 }
 bc_calc() { printf '%s\n' "$1" | bc; }
 
-# balance_of <holder> <token: native|0x...>
-balance_of() {
-    local out
-    if [ "$2" = "native" ]; then
-        out="$(cast balance "$1" --rpc-url "${RPC_URL}")"
-    else
-        out="$(cast call "$2" "balanceOf(address)(uint256)" "$1" --rpc-url "${RPC_URL}")"
-    fi
-    out="${out%% *}"
-    require_uint "${out}"
-    printf '%s' "${out}"
-}
-
 # --- 1. The case -------------------------------------------------------------------------
 
 case_dir="${case_arg%/}"
@@ -157,7 +152,6 @@ case_id="$(basename "${case_dir}")"
 recovery_path="${case_dir}/recovery.json"
 move_path="${case_dir}/move.sh"
 signatures_path="${case_dir}/signatures.json"
-[ -f "${recovery_path}" ] || die "${recovery_path} not found."
 [ -f "${move_path}" ] || die "${move_path} not found."
 [ -f "${signatures_path}" ] || die "${signatures_path} not found — sign first (see cases/_template/README.md step 2)."
 [ -n "${out_dir}" ] || out_dir="${case_dir}/generated"
@@ -165,11 +159,11 @@ mkdir -p "${out_dir}"
 out_dir="$(cd "${out_dir}" && pwd)"
 
 step "1. Checking ${case_id}/recovery.json"
-"${repo_root}/recovery-tx/validate-recovery.sh" "${recovery_path}"
-
-locked="$(jq -r '.locked_contract' "${recovery_path}")"
-destination="$(jq -r '.destination' "${recovery_path}")"
-funds="$(jq -c '.funds[]' "${recovery_path}")"
+if [ -f "${recovery_path}" ]; then
+    "${repo_root}/recovery-tx/validate-recovery.sh" "${recovery_path}"
+else
+    echo "No recovery.json yet: it is generated below from the BridgeEvents of move.sh."
+fi
 
 # --- 2. The fork -------------------------------------------------------------------------
 
@@ -183,8 +177,11 @@ nonstandard=""
 if [ -n "${L2_RPC_URL:-}" ] && [ "${L2_RPC_URL%/}" != "${official_rpc}" ]; then
     nonstandard="L2_RPC_URL is not the official ${official_rpc}/"
 fi
+if [ -n "${BRIDGE_ADDRESS:-}" ] && [ "$(lower "${BRIDGE_ADDRESS}")" != "0x2a3dd3eb832af982ec71669e178424b10dca2ede" ]; then
+    nonstandard="BRIDGE_ADDRESS is not the zkEVM bridge"
+fi
 if [ -n "${nonstandard}" ] && [ "${allow_test_fork}" -ne 1 ]; then
-    die "non-standard fork configuration (${nonstandard}). A real submission must fork from the official RPC ${official_rpc}/ at the halt block: unset L2_RPC_URL and FORK_BLOCK. For a test run use --allow-test-fork (the package is then NOT valid for a real submission)."
+    die "non-standard fork configuration (${nonstandard}). A real submission must fork from the official RPC ${official_rpc}/ at the halt block: unset L2_RPC_URL, FORK_BLOCK and BRIDGE_ADDRESS. For a test run use --allow-test-fork (the package is then NOT valid for a real submission)."
 fi
 fork_pid=""
 fork_container=""
@@ -253,24 +250,6 @@ head_before="$(cast block-number --rpc-url "${RPC_URL}")"
 require_uint "${head_before}"
 [ "${head_before}" -ge "${fork_block}" ] || die "the RPC head (${head_before}) is behind the fork block (${fork_block})."
 
-[ "$(cast code "${locked}" --rpc-url "${RPC_URL}")" != "0x" ] || die "locked_contract ${locked} has no code on the fork — it must be a Smart Contract."
-[ "$(cast code "${destination}" --rpc-url "${RPC_URL}")" = "0x" ] || die "destination ${destination} is a contract; it must be an EOA you control, because it has to sign."
-
-# Balances before the move. The locked contract must hold at least what is declared: if
-# not, the fork was probably already used by an earlier run.
-balances="[]"
-while IFS= read -r fund; do
-    token="$(jq -r '.token' <<<"${fund}")"
-    amount="$(jq -r '.amount' <<<"${fund}")"
-    locked_before="$(balance_of "${locked}" "${token}")"
-    dest_before="$(balance_of "${destination}" "${token}")"
-    if [ "$(bc_calc "${locked_before} >= ${amount}")" != "1" ]; then
-        die "${locked} holds ${locked_before} of ${token} on the fork, less than the ${amount} declared. Is the locked contract on this chain at that address, with those funds?"
-    fi
-    balances="$(jq -c --arg token "${token}" --arg amount "${amount}" --arg lb "${locked_before}" --arg db "${dest_before}" \
-        '. + [{token: $token, amount: $amount, locked_before: $lb, destination_before: $db}]' <<<"${balances}")"
-done <<<"${funds}"
-echo "The locked contract holds the declared funds."
 
 # --- 3. Run move.sh ----------------------------------------------------------------------
 
@@ -283,7 +262,7 @@ set -e
 [ "${run_status}" -eq 0 ] || die "move.sh failed (see above). Run this again: it starts a fresh fork every time."
 
 # A tx still pending when move.sh exits (e.g. sent with `cast send --async`) would be mined after
-# the head read below: it would be missing from the scan while still affecting the balances. So
+# the head read below: it would be missing from the scan (its sender and its BridgeEvents). So
 # mine a block now and require that nothing is left in the pool.
 cast rpc evm_mine --rpc-url "${RPC_URL}" >/dev/null || die "could not mine a block on the fork (evm_mine)."
 pool_tries=0
@@ -312,11 +291,10 @@ done
 echo "Transactions mined by move.sh:"
 printf '%s' "${tx_hashes}" | sed 's/^/  /'
 
-# --- 4. Senders, and the simulation against recovery.json --------------------------------
+# --- 4. Senders, and the outputs (recovery.json) ------------------------------------------
 
-step "4. Checking the result against recovery.json"
+step "4. Building the outputs from the BridgeEvents of move.sh"
 senders=""
-dest_fees="0"
 while IFS= read -r tx; do
     [ -z "${tx}" ] && continue
     receipt="$(cast receipt "${tx}" --json --rpc-url "${RPC_URL}")"
@@ -325,48 +303,80 @@ while IFS= read -r tx; do
     from="$(jq -r '.from' <<<"${receipt}")"
     [[ "${from}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "could not read the sender of ${tx}."
     senders+="$(lower "${from}")"$'\n'
-    if [ "$(lower "${from}")" = "$(lower "${destination}")" ]; then
-        gas_used="$(cast to-dec "$(jq -r '.gasUsed' <<<"${receipt}")")"
-        gas_price="$(cast to-dec "$(jq -r '.effectiveGasPrice' <<<"${receipt}")")"
-        require_uint "${gas_used}"
-        require_uint "${gas_price}"
-        dest_fees="$(bc_calc "${dest_fees} + ${gas_used} * ${gas_price}")"
-    fi
 done <<<"${tx_hashes}"
 senders="$(printf '%s' "${senders}" | sort -u)"
-# Impersonating the locked contract itself proves nothing about who controls it, and it would move
-# the funds with no signature at all (a contract sender needs none): the funds must move through the
-# contract's own logic, called by an EOA that signs.
-if grep -Fxq "$(lower "${locked}")" <<<"${senders}"; then
-    die "move.sh sends a transaction FROM the locked contract (${locked}). Impersonating the contract itself is not accepted: the funds must be moved by the contract's own logic (e.g. a withdraw function), called by an EOA that signs."
-fi
 
-result_failed=0
-result_balances="[]"
-while IFS= read -r row; do
-    token="$(jq -r '.token' <<<"${row}")"
-    amount="$(jq -r '.amount' <<<"${row}")"
-    lb="$(jq -r '.locked_before' <<<"${row}")"
-    db="$(jq -r '.destination_before' <<<"${row}")"
-    la="$(balance_of "${locked}" "${token}")"
-    da="$(balance_of "${destination}" "${token}")"
-    fees="0"
-    # The destination may itself have sent transactions; the gas it paid is not a movement
-    # of funds, so it is added back to compare the native balance.
-    [ "${token}" != "native" ] || fees="${dest_fees}"
-    locked_lost="$(bc_calc "${lb} - ${la}")"
-    dest_gained="$(bc_calc "${da} + ${fees} - ${db}")"
-    if [ "${locked_lost}" = "${amount}" ] && [ "${dest_gained}" = "${amount}" ]; then
-        echo "OK   ${token}: ${amount} moved from ${locked} to ${destination}"
+# tx_hashes is a newline-separated list of plain hashes (read from the RPC and used as-is).
+# shellcheck disable=SC2086
+built="$(RPC_URL="${RPC_URL}" "${repo_root}/recovery-tx/build-recovery.sh" ${tx_hashes})" \
+    || die "could not build the outputs from the transactions of move.sh — see above."
+
+# The bridge must have really taken what the events say. Per token (ETH also counts what the
+# bridgeMessages carry): ETH stays in the bridge (its balance grows by the amount), wrapped tokens
+# are burned (their total supply shrinks by the amount); build-recovery.sh refuses tokens native to
+# this chain. Measured at
+# the head before move.sh and now. Redundant with the events of the real bridge, kept as a check.
+bridge="${BRIDGE_ADDRESS:-0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe}"
+eth_origin="0/0x0000000000000000000000000000000000000000"
+# read_uint <cast call/balance output>: the integer, checked.
+read_uint() {
+    local v="${1%% *}"
+    require_uint "${v}"
+    printf '%s' "${v}"
+}
+balances="[]"
+balance_failed=0
+while IFS=$'\t' read -r origin total; do
+    origin_network="${origin%%/*}"
+    origin_address="${origin#*/}"
+    if [ "${origin}" = "${eth_origin}" ]; then
+        measured="bridge_balance"
+        holder="${bridge}"
+        before="$(read_uint "$(cast balance "${bridge}" --block "${head_before}" --rpc-url "${RPC_URL}")")"
+        after="$(read_uint "$(cast balance "${bridge}" --rpc-url "${RPC_URL}")")"
     else
-        echo "FAIL ${token}: declared ${amount}; the locked contract lost ${locked_lost} and the destination gained ${dest_gained}." >&2
-        result_failed=1
+        measured="total_supply"
+        holder="$(cast call "${bridge}" "getTokenWrappedAddress(uint32,address)(address)" "${origin_network}" "${origin_address}" --rpc-url "${RPC_URL}")"
+        [[ "${holder}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "could not read the wrapped token of (${origin_network}, ${origin_address}) from the bridge."
+        before="$(read_uint "$(cast call "${holder}" "totalSupply()(uint256)" --block "${head_before}" --rpc-url "${RPC_URL}")")"
+        after="$(read_uint "$(cast call "${holder}" "totalSupply()(uint256)" --rpc-url "${RPC_URL}")")"
     fi
-    result_balances="$(jq -c --argjson row "${row}" --arg la "${la}" --arg da "${da}" --arg fees "${fees}" \
-        '. + [$row + {locked_after: $la, destination_after: $da, destination_gas_paid: $fees}]' <<<"${result_balances}")"
-done < <(jq -c '.[]' <<<"${balances}")
-if [ "${result_failed}" -ne 0 ]; then
-    die "the simulation does not match recovery.json. Fix recovery.json or move.sh and run again on a fresh fork."
+    if [ "${measured}" = "bridge_balance" ]; then
+        moved="$(bc_calc "${after} - ${before}")"
+        what="the bridge's balance grew by"
+    else
+        moved="$(bc_calc "${before} - ${after}")"
+        what="the wrapped token's supply (${holder}) shrank by"
+    fi
+    if [ "${moved}" = "${total}" ]; then
+        echo "OK   token (${origin_network}, ${origin_address}): ${total} bridged, ${what} ${moved}"
+    else
+        echo "FAIL token (${origin_network}, ${origin_address}): the events say ${total} was bridged, but ${what} ${moved}." >&2
+        balance_failed=1
+    fi
+    balances="$(jq -c --argjson on "${origin_network}" --arg oa "${origin_address}" --arg measured "${measured}" \
+        --arg holder "$(lower "${holder}")" --arg before "${before}" --arg after "${after}" --arg bridged "${total}" \
+        '. + [{token_info: {origin_network: $on, origin_token_address: $oa}, measured: $measured, address: $holder,
+               before: $before, after: $after, bridged: $bridged}]' <<<"${balances}")"
+done < <(jq -r --arg eth "${eth_origin}" '
+    [.outputs[] | {key: (if .leaf_type == "Transfer" then "\(.token_info.origin_network)/\(.token_info.origin_token_address | ascii_downcase)" else $eth end), amount}]
+    | group_by(.key)[] | [.[0].key, (map(.amount) | join("+"))] | @tsv' <<<"${built}" \
+    | while IFS=$'\t' read -r key sum; do printf '%s\t%s\n' "${key}" "$(bc_calc "${sum}")"; done)
+[ "${balance_failed}" -eq 0 ] || die "the balances do not match the BridgeEvents of move.sh (see above)."
+
+if [ -f "${recovery_path}" ]; then
+    if [ "$(jq -S . "${recovery_path}")" != "$(jq -S . <<<"${built}")" ]; then
+        echo "recovery.json in the case:" >&2
+        jq -c '.outputs[], {origin_SC_funds}' "${recovery_path}" | sed 's/^/  /' >&2
+        echo "what move.sh gives on this fork:" >&2
+        jq -c '.outputs[], {origin_SC_funds}' <<<"${built}" | sed 's/^/  /' >&2
+        die "${case_id}/recovery.json does not match what move.sh does. If you changed move.sh, delete recovery.json and run this again to regenerate it — then sign again (the signatures cover both files)."
+    fi
+    echo "OK   recovery.json matches the BridgeEvents of move.sh ($(jq '.outputs | length' "${recovery_path}") output(s))"
+else
+    printf '%s\n' "${built}" >"${recovery_path}"
+    "${repo_root}/recovery-tx/validate-recovery.sh" "${recovery_path}" >/dev/null
+    echo "Wrote ${recovery_path} ($(jq '.outputs | length' "${recovery_path}") output(s)). Check it: it is what you recover, and what you sign."
 fi
 
 # --- 5. Proof of ownership ---------------------------------------------------------------
@@ -385,9 +395,9 @@ while IFS= read -r addr; do
     fi
 done <<<"${senders}"
 
-required="$(printf '%s%s\n' "${eoa_senders}" "$(lower "${destination}")" | sed '/^$/d' | sort -u)"
-echo "EOAs that must sign (impersonated senders and the destination):"
-printf '%s\n' "${required}" | sed 's/^/  /'
+required="$(printf '%s' "${eoa_senders}" | sed '/^$/d' | sort -u)"
+echo "EOAs that must sign (every impersonated EOA sender):"
+[ -z "${required}" ] || printf '%s\n' "${required}" | sed 's/^/  /'
 if [ -n "${contract_senders}" ]; then
     echo "Contracts that sent transactions (they cannot sign; their controlling EOAs must, and you"
     echo "explain that control path in the email — see submission/SUBMIT.md):"
@@ -400,6 +410,9 @@ if [ -n "${first_message}" ]; then
     nonce="${first_message#*nonce: }"
     nonce="${nonce%% — date:*}"
 fi
+# The manifest records the nonce of the signatures (none when nobody signs: every sender is a
+# contract); a generated one is only a suggestion for the signing commands below.
+signed_nonce="${nonce}"
 if [ -z "${nonce}" ]; then
     nonce="${NONCE:-$(date -u +%Y%m%d%H%M%S)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')}"
 fi
@@ -425,7 +438,11 @@ if [ -n "${missing}" ]; then
     exit 1
 fi
 
-"${repo_root}/ownership-proof/verify-signature.sh" "${signatures_path}" || die "signatures.json has invalid entries — see above. If recovery.json or move.sh changed after signing, every signature must be made again (they are bound to those exact files)."
+# Every entry must verify, also extra ones. (No entry at all is fine only when no EOA must sign:
+# then every sender is a contract.)
+if [ "$(jq 'length' "${signatures_path}")" != "0" ] || [ -n "${required}" ]; then
+    "${repo_root}/ownership-proof/verify-signature.sh" "${signatures_path}" || die "signatures.json has invalid entries — see above. If recovery.json or move.sh changed after signing, every signature must be made again (they are bound to those exact files)."
+fi
 
 # --- 6. Write the files --------------------------------------------------------------------------
 
@@ -460,21 +477,20 @@ jq -n \
     --arg chain_id "${chain_id}" \
     --arg head_before "${head_before}" \
     --arg head_after "${head_after}" \
-    --arg locked "${locked}" \
-    --arg destination "${destination}" \
-    --arg nonce "${nonce}" \
+    --arg nonce "${signed_nonce}" \
     --argjson tx_hashes "$(to_json_array "${tx_hashes}")" \
     --argjson eoa_senders "$(to_json_array "${eoa_senders}")" \
     --argjson contract_senders "$(to_json_array "${contract_senders}")" \
     --argjson required_signers "$(to_json_array "${required}")" \
-    --argjson balances "${result_balances}" \
+    --slurpfile recovery "${recovery_path}" \
+    --argjson balances "${balances}" \
     --argjson files "${files_json}" \
     '{case_id: $case_id, created_at: $created_at, kit_commit: $kit_commit, kit_dirty: $kit_dirty,
       test_fork: $test_fork, fork_block: $fork_block, chain_id: $chain_id,
       head_before: $head_before, head_after: $head_after,
-      locked_contract: $locked, destination: $destination, nonce: $nonce,
+      nonce: $nonce, outputs: $recovery[0].outputs, balances: $balances,
       tx_hashes: $tx_hashes, eoa_senders: $eoa_senders, contract_senders: $contract_senders,
-      required_signers: $required_signers, balances: $balances, files: $files}' >"${stage}/manifest.json"
+      required_signers: $required_signers, files: $files}' >"${stage}/manifest.json"
 
 echo "Generated in ${out_dir}:"
 for generated_file in "${out_dir}"/*; do echo "  ${generated_file##*/}"; done

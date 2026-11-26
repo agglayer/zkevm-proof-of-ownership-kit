@@ -6,12 +6,12 @@
 #   1. unpacks the .tgz safely (it is untrusted input: single <case-id>/ folder, regular files
 #      only, no absolute or '..' paths) and checks the files in manifest.json against their sha256;
 #   2. starts a fresh shadow-fork (the same one setup/fork.sh gives anyone: pinned to the halt
-#      block) and runs the packaged move.sh on it, checking the result against the packaged
-#      recovery.json and that signatures.json holds a valid signature for every EOA that
-#      move.sh impersonates plus the destination (submission/helpers/generate.sh);
-#   3. compares what it found on its own fork with what the manifest claims: locked contract,
-#      destination, nonce, fork block, impersonated addresses (EOA and contract), and the
-#      amounts moved. (Transaction hashes and gas are not compared: they depend on the run.)
+#      block) and runs the packaged move.sh on it, checking that its BridgeEvents give exactly the
+#      packaged recovery.json and that signatures.json holds a valid signature for every EOA that
+#      move.sh impersonates (submission/helpers/generate.sh);
+#   3. compares what it found on its own fork with what the manifest claims: outputs, balances, nonce,
+#      fork block, impersonated addresses (EOA and contract). (Transaction hashes and gas are
+#      not compared: they depend on the run.)
 #   The fork is stopped at the end. Exit code 0 = verified, 1 = not, 3 = every automatic check
 #   passed but MANUAL REVIEW IS REQUIRED: some contract sent transactions (it cannot sign, so
 #   nothing automatic proves who controls it: the controlling EOAs, which the submitter explains in
@@ -176,8 +176,7 @@ step "3. Comparing with manifest.json"
 # What must be the same on any run. Addresses are lowercased and lists sorted. Tx hashes,
 # gas and block numbers of the head are left out: they depend on when the run happens.
 normalize='{
-    locked_contract: (.locked_contract | ascii_downcase),
-    destination: (.destination | ascii_downcase),
+    outputs: .outputs,
     nonce: .nonce,
     fork_block: .fork_block,
     chain_id: .chain_id,
@@ -185,13 +184,13 @@ normalize='{
     eoa_senders: ([.eoa_senders[] | ascii_downcase] | sort),
     contract_senders: ([.contract_senders[] | ascii_downcase] | sort),
     required_signers: ([.required_signers[] | ascii_downcase] | sort),
-    balances: [.balances[] | {token: (.token | ascii_downcase), amount, locked_before, locked_after, destination_before}]
+    balances: .balances
 }'
 claimed="$(jq -S "${normalize}" "${manifest}")" || die "manifest.json lacks fields the verifier needs."
 found="$(jq -S "${normalize}" "${generated}/manifest.json")"
 
 compare_failed=0
-for key in locked_contract destination nonce fork_block chain_id test_fork eoa_senders contract_senders required_signers balances; do
+for key in outputs balances nonce fork_block chain_id test_fork eoa_senders contract_senders required_signers; do
     c="$(jq -c --arg k "${key}" '.[$k]' <<<"${claimed}")"
     f="$(jq -c --arg k "${key}" '.[$k]' <<<"${found}")"
     if [ "${c}" = "${f}" ]; then
@@ -216,7 +215,7 @@ fi
 # The signatures in the package are exactly the ones checked in step 2 (generate.sh verified them
 # on the unpacked signatures.json); show who signed.
 echo
-echo "Impersonated EOAs (and the destination) with a valid signature:"
+echo "Impersonated EOAs with a valid signature:"
 jq -r '.required_signers[]' "${manifest}" | sed 's/^/  /'
 manual_review=0
 if jq -e '(.contract_senders | length) > 0' "${manifest}" >/dev/null; then

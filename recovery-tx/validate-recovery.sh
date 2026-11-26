@@ -1,19 +1,25 @@
 #!/bin/bash
-# Validates a case's recovery.json — the explicit statement of which funds a stakeholder
-# wants to recover from which locked Smart Contract, and to which final wallet. Purely
-# offline: it checks the file's shape, not the chain (comparing it with the simulated
-# move is the job of the packaging/verification steps).
+# Validates a case's recovery.json — the list of bridge exits (outputs) a stakeholder recovers,
+# generated from the BridgeEvents of move.sh by recovery-tx/build-recovery.sh. Purely offline:
+# it checks the file's shape, not the chain (comparing it with the simulated move is the job
+# of the packaging/verification steps).
 #
-# Rules: every field below is required and no others are allowed; addresses are 0x + 40
-# hex and neither the zero address nor a template placeholder; `destination` differs from
-# `locked_contract`; `funds` has at least one entry, each with a `token` ("native" or an
-# ERC-20 address) and an `amount` — a positive integer in base units, written as a string
-# so big values are not rounded — and no token appears twice (merge them into one entry).
+# Rules: only the fields below, all required; addresses are 0x + 40 hex; networks are uint32;
+# `outputs` has at least one entry; per token, `origin_SC_funds` totals what the outputs bridge.
 #
 # Fields:
-#   locked_contract  the Smart Contract holding the funds
-#   destination      the final wallet (EOA) that receives them
-#   funds[]          { "token": "native"|"0x...", "amount": "<base units>", "symbol"?: "..." }
+#   version    1
+#   outputs[]  one per BridgeEvent, in the order move.sh emitted them, with aggkit's names:
+#     { "leaf_type": "Transfer" (bridgeAsset) | "Message" (bridgeMessage),
+#       "token_info": { "origin_network": <uint32>, "origin_token_address": "0x..." },
+#       "destination_network": <uint32> (0 for a Transfer), "destination_address": "0x...",
+#       "amount": "<base units, as a string>", "metadata": "0x<hex bytes>" }
+#   origin_SC_funds[]  the contracts that held the funds before move.sh, each once:
+#     { "address": "0x...",
+#       "tokens": [ { "token_info": { "origin_network": <uint32>, "origin_token_address": "0x..." },
+#                     "amount": "<total base units it bridged out, as a string>" } ] }
+#     Each token at most once per contract. Per token, the amounts over all contracts must add up
+#     to the outputs' amounts: a Transfer bridges its token_info, a Message ETH (0 / 0x0...0).
 #
 # Requires: jq.
 #
@@ -41,36 +47,100 @@ if ! jq -e . "${recovery_path}" >/dev/null 2>&1; then
 fi
 
 errors="$(jq -r '
+  def bigadd($a; $b):
+    ($a | explode | reverse | map(. - 48)) as $x | ($b | explode | reverse | map(. - 48)) as $y
+    | reduce range(0; [($x | length), ($y | length)] | max) as $i ({c: 0, d: []};
+        (($x[$i] // 0) + ($y[$i] // 0) + .c) as $t | .d += [$t % 10] | .c = (($t - $t % 10) / 10))
+    | (if .c > 0 then .d + [.c] else .d end) | reverse | map(. + 48) | implode;
+  def lc_token: {origin_network, origin_token_address: (.origin_token_address | ascii_downcase)};
   def addr: type == "string" and test("^0x[0-9a-fA-F]{40}$");
-  def placeholder: type == "string" and (ascii_downcase | . == "0x0000000000000000000000000000000000000000" or . == "0x000000000000000000000000000000000000dead");
-  . as $r
+  def uint32: type == "number" and . == floor and . >= 0 and . <= 4294967295;
+  ["leaf_type", "token_info", "destination_network", "destination_address",
+   "amount", "metadata"] as $fields
+  | ["origin_network", "origin_token_address"] as $token_fields
+  | . as $r
   | if type != "object" then "the top level must be a JSON object"
     else
-      ( (keys_unsorted - ["locked_contract", "destination", "funds"])[]
-        | "unknown field: \(.)" ),
-      ( ("locked_contract", "destination") as $k
-        | if ($r[$k] | addr | not) then "\($k): must be an address (0x + 40 hex chars)"
-          elif ($r[$k] | placeholder) then "\($k): is still a template placeholder (zero address / 0x...dEaD)"
-          else empty end ),
-      ( if ($r.locked_contract | addr) and ($r.destination | addr)
-           and (($r.locked_contract | ascii_downcase) == ($r.destination | ascii_downcase))
-        then "destination: must differ from locked_contract" else empty end ),
-      ( if ($r.funds | type) != "array" or ($r.funds | length) == 0
-        then "funds: required, must be a non-empty list"
+      ( (keys_unsorted - ["version", "outputs", "origin_SC_funds"])[] | "unknown field: \(.)" ),
+      ( if $r.version != 1 then "version: must be 1" else empty end ),
+      ( if ($r.outputs | type) != "array" or ($r.outputs | length) == 0
+        then "outputs: required, must be a non-empty list"
         else
-          ( $r.funds | to_entries[] | .key as $i | .value as $f
-            | if ($f | type) != "object" then "funds[\($i)]: must be an object"
+          ( $r.outputs | to_entries[] | .key as $i | .value as $o | "outputs[\($i)]" as $w
+            | if ($o | type) != "object" then "\($w): must be an object"
               else
-                ( ($f | keys_unsorted - ["token", "amount", "symbol"])[] | "funds[\($i)]: unknown field: \(.)" ),
-                ( if $f.token == "native" or ($f.token | addr and (placeholder | not)) then empty
-                  else "funds[\($i)].token: must be \"native\" or a token address" end ),
-                ( if ($f.amount | type) != "string" then "funds[\($i)].amount: must be a string with the amount in base units (e.g. \"1000000000000000000\")"
-                  elif ($f.amount | test("^[1-9][0-9]*$") | not) then "funds[\($i)].amount: must be a positive integer in base units, got \"\($f.amount)\""
-                  else empty end ),
-                ( if ($f | has("symbol")) and (($f.symbol | type) != "string" or $f.symbol == "") then "funds[\($i)].symbol: must be a non-empty string when present" else empty end )
-              end ),
-          ( [ $r.funds[] | select(type == "object") | .token | select(type == "string") | ascii_downcase ]
-            | group_by(.)[] | select(length > 1) | "funds: token \(.[0]) is listed more than once — merge it into a single entry (sum the amounts)" )
+                ( ($o | keys_unsorted - $fields)[] | "\($w): unknown field: \(.)" ),
+                ( $fields[] as $k | select(($o | has($k)) | not) | "\($w): missing field: \($k)" ),
+                ( if $o.leaf_type == "Transfer" or $o.leaf_type == "Message" then empty else "\($w).leaf_type: must be \"Transfer\" (bridgeAsset) or \"Message\" (bridgeMessage)" end ),
+                ( if ($o | has("token_info")) | not then empty
+                  elif ($o.token_info | type) != "object" then "\($w).token_info: must be an object"
+                  else
+                    ( ($o.token_info | keys_unsorted - $token_fields)[] | "\($w).token_info: unknown field: \(.)" ),
+                    ( $token_fields[] as $k | select(($o.token_info | has($k)) | not) | "\($w).token_info: missing field: \($k)" ),
+                    ( if ($o.token_info | has("origin_network") | not) or ($o.token_info.origin_network | uint32) then empty
+                      else "\($w).token_info.origin_network: must be a uint32" end ),
+                    ( if ($o.token_info | has("origin_token_address") | not) or ($o.token_info.origin_token_address | addr) then empty
+                      else "\($w).token_info.origin_token_address: must be an address (0x + 40 hex chars)" end )
+                  end ),
+                ( ("destination_network") as $k
+                  | if ($o[$k] | uint32) then empty else "\($w).\($k): must be a uint32" end ),
+                ( ("destination_address") as $k
+                  | if ($o[$k] | addr) then empty else "\($w).\($k): must be an address (0x + 40 hex chars)" end ),
+                ( if ($o.amount | type) == "string" and ($o.amount | test("^(0|[1-9][0-9]*)$")) then empty
+                  else "\($w).amount: must be an integer in base units, written as a string" end ),
+                ( if ($o.metadata | type) == "string" and ($o.metadata | test("^0x([0-9a-fA-F]{2})*$")) then empty
+                  else "\($w).metadata: must be hex bytes (0x...)" end ),
+                ( if $o.leaf_type == "Transfer" and $o.destination_network != 0 then "\($w).destination_network: must be 0 (Ethereum) for a Transfer" else empty end )
+              end )
+        end ),
+      ( if ($r | has("origin_SC_funds") | not) then "missing field: origin_SC_funds"
+        elif ($r.origin_SC_funds | type) != "array" then "origin_SC_funds: must be a list"
+        else
+          ( [ $r.origin_SC_funds | to_entries[] | .key as $i | .value as $e | "origin_SC_funds[\($i)]" as $w
+              | if ($e | type) != "object" then "\($w): must be an object"
+                else
+                  ( ($e | keys_unsorted - ["address", "tokens"])[] | "\($w): unknown field: \(.)" ),
+                  ( if ($e.address | addr) then empty else "\($w).address: must be an address (0x + 40 hex chars)" end ),
+                  ( if ($e.tokens | type) != "array" or ($e.tokens | length) == 0 then "\($w).tokens: must be a non-empty list"
+                    else
+                      ( $e.tokens | to_entries[] | .key as $j | .value as $t | "\($w).tokens[\($j)]" as $u
+                        | if ($t | type) != "object" then "\($u): must be an object"
+                          else
+                            ( ($t | keys_unsorted - ["token_info", "amount"])[] | "\($u): unknown field: \(.)" ),
+                            ( if ($t.token_info | type) == "object" and ($t.token_info | keys == ["origin_network", "origin_token_address"])
+                                 and ($t.token_info.origin_network | uint32) and ($t.token_info.origin_token_address | addr) then empty
+                              else "\($u).token_info: must be {origin_network: <uint32>, origin_token_address: <address>}" end ),
+                            ( if ($t.amount | type) == "string" and ($t.amount | test("^[1-9][0-9]*$")) then empty
+                              else "\($u).amount: must be a positive integer in base units, written as a string" end )
+                          end )
+                    end )
+                end ] ) as $shape
+          | if ($shape | length) > 0 then $shape[]
+            else
+              ( [ $r.origin_SC_funds[] | .address | ascii_downcase ] | group_by(.)[] | select(length > 1)
+                | "origin_SC_funds: \(.[0]) is listed more than once" ),
+              ( $r.origin_SC_funds | to_entries[]
+                | [ .value.tokens[] | .token_info | lc_token ] as $ts
+                | select(($ts | unique | length) != ($ts | length))
+                | "origin_SC_funds[\(.key)].tokens: a token is listed more than once" ),
+              # Only once the outputs are well-formed: per token, the section totals the outputs.
+              ( if ($r.outputs | type) != "array"
+                   or any($r.outputs[]; (type != "object") or ((.amount | type) != "string") or ((.amount | test("^(0|[1-9][0-9]*)$")) | not)
+                          or (.leaf_type == "Transfer" and (((.token_info | type) != "object")
+                              or ((.token_info.origin_token_address | addr) | not)
+                              or ((.token_info.origin_network | uint32) | not)))) then empty
+                else
+                  def totals: group_by(.t) | map({token_info: .[0].t,
+                    amount: (reduce .[].a as $a ("0"; bigadd(.; $a)) | sub("^0+(?=.)"; ""))});
+                  ( [ $r.outputs[] | select(.amount != "0")
+                      | {t: (if .leaf_type == "Transfer" then (.token_info | lc_token)
+                             else {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"} end),
+                         a: .amount} ] | totals ) as $want
+                  | ( [ $r.origin_SC_funds[].tokens[] | {t: (.token_info | lc_token), a: .amount} ] | totals ) as $got
+                  | if $got == $want then empty
+                    else "origin_SC_funds: the totals per token do not match the outputs; the outputs bridge \($want | tojson)" end
+                end )
+            end
         end )
     end
 ' "${recovery_path}")"
@@ -81,4 +151,4 @@ if [ -n "${errors}" ]; then
     exit 1
 fi
 
-echo "OK: ${recovery_path} — $(jq -r '.funds | length' "${recovery_path}") fund(s) from $(jq -r '.locked_contract' "${recovery_path}") to $(jq -r '.destination' "${recovery_path}")"
+echo "OK: ${recovery_path} — $(jq -r '[.outputs[] | select(.leaf_type == "Transfer")] | length' "${recovery_path}") Transfer (bridgeAsset) and $(jq -r '[.outputs[] | select(.leaf_type == "Message")] | length' "${recovery_path}") Message (bridgeMessage) output(s), from $(jq -r '.origin_SC_funds | length' "${recovery_path}") contract(s)"
