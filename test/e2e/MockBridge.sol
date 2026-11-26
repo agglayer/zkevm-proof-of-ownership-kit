@@ -8,6 +8,8 @@ contract MockERC20 {
     uint256 public totalSupply;
     address public bridge;
 
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
     constructor(address bridge_) {
         bridge = bridge_;
     }
@@ -15,12 +17,14 @@ contract MockERC20 {
     function mint(address to, uint256 amount) external {
         balanceOf[to] += amount;
         totalSupply += amount;
+        emit Transfer(address(0), to, amount);
     }
 
     function burn(address from, uint256 amount) external {
         require(msg.sender == bridge, "only bridge");
         balanceOf[from] -= amount;
         totalSupply -= amount;
+        emit Transfer(from, address(0), amount);
     }
 
     function approve(address spender, uint256 amount) external returns (bool) {
@@ -32,6 +36,7 @@ contract MockERC20 {
         allowance[from][msg.sender] -= amount;
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
+        emit Transfer(from, to, amount);
         return true;
     }
 }

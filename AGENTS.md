@@ -79,7 +79,10 @@ plain and step-by-step.
 - `recovery-tx/` — `impersonate-and-move.template.sh` (annotated template), `run.sh` (runs a
   case's `move.sh` against the fork, inside a sandbox container), `build-recovery.sh` (builds
   `recovery.json` from tx hashes: one output per `BridgeEvent` of the zkEVM bridge, with
-  aggkit's bridgesync names for the event's fields; refuses bridgeAsset to
+  aggkit's bridgesync names for the event's fields, plus `origin_SC_funds` (balance diff over the
+  call traces and Transfer logs: the contract that lost that asset; with several, the first one up
+  the bridge call's call chain; refused if none, or if a contract is credited more than it lost);
+  refuses bridgeAsset to
   a network other than 0 and of a token native to the chain (origin network = the bridge's `networkID()`); `BRIDGE_ADDRESS` is a test-only override), `validate-recovery.sh` (offline check of a case's `recovery.json`; its schema
   lives there), `list-impersonated.sh` (derives senders from receipts and verifies a case's
   `signatures.json`).
@@ -95,7 +98,7 @@ plain and step-by-step.
   `prepare-submission.sh` generates it from `move.sh` — `{version: 1, outputs: [...]}`, each output
   `leaf_type` (`"Transfer"` bridgeAsset, `"Message"` bridgeMessage), `token_info` (`origin_network`, `origin_token_address`),
   `destination_network` (0 for bridgeAsset), `destination_address`, `amount` (string), `metadata`
-  (hex, not decoded); no deposit count.
+  (hex, not decoded), `origin_SC_funds` (null iff amount is "0"); no deposit count.
 - `submission/` — `prepare-submission.sh` is the one script stakeholders run: it pre-checks the case
   (`move.sh` present and without template placeholders, `recovery.json` valid if present), runs
   `helpers/generate.sh`, packs its output with `helpers/package.sh` and prints where to send the
@@ -248,6 +251,8 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 - `cast` reads `ETH_RPC_URL`, **not** `RPC_URL`. The scripts pass `--rpc-url "${RPC_URL}"`
   explicitly; ad-hoc `cast` calls in tests need `ETH_RPC_URL` or `--rpc-url`, otherwise they
   silently hit `localhost:8545`.
+- `build-recovery.sh` needs `debug_traceTransaction` with callTracer `withLog` (the Anvil fork
+  serves it).
 - `fork.sh` refuses to start if the RPC's latest block isn't the halt block — that's intended, not
   a bug to work around.
 - The date in the signed message is the signing day (UTC), so `--print-message` output should be

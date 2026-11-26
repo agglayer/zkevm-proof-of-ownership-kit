@@ -70,7 +70,8 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
       "destination_network": 0,
       "destination_address": "0x...",
       "amount": "1000000000000000000",
-      "metadata": "0x"
+      "metadata": "0x",
+      "origin_SC_funds": "0x..."
     },
     {
       "leaf_type": "Message",
@@ -81,7 +82,8 @@ calls it made (then it stops and asks for the signatures of step 3). It looks li
       "destination_network": 0,
       "destination_address": "0x...",
       "amount": "0",
-      "metadata": "0x..."
+      "metadata": "0x...",
+      "origin_SC_funds": null
     }
   ]
 }
@@ -98,6 +100,11 @@ The fields are the ones of the bridge's `BridgeEvent`, with the names aggkit use
   for a `bridgeAsset`).
 - `amount` — in base units (wei for ETH), as a string; for a `bridgeMessage`, the ETH it carries.
 - `metadata` — as emitted, not decoded (the message bytes of a `bridgeMessage`).
+- `origin_SC_funds` — not in the `BridgeEvent`: the contract that held the funds before `move.sh`
+  ran, found by balance diff (the contract whose balance of that token went down; if several did,
+  the one the bridge call came from). `null` when the output moves nothing (`amount` `"0"`). A
+  `move.sh` where no contract lost the funds, or a contract is credited more than it lost, is
+  refused.
 
 **Check it**: it is what you recover, and what you sign. If it is not what you want, fix `move.sh`,
 delete `recovery.json` and run the command again. Without a fork at hand, check the file's format

@@ -265,9 +265,9 @@ jq -e --arg v "$(cs "${VAULT}")" --arg d "$(cs "${DEST}")" --arg amount "${ASSET
     --argjson mn "${MESSAGE_NETWORK}" --arg md "${MESSAGE_METADATA}" '
     .version == 1 and (.outputs | length) == 2
     and .outputs[0] == {leaf_type: "Transfer", token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"},
-        destination_network: 0, destination_address: $d, amount: $amount, metadata: "0x"}
+        destination_network: 0, destination_address: $d, amount: $amount, metadata: "0x", origin_SC_funds: $v}
     and .outputs[1] == {leaf_type: "Message", token_info: {origin_network: 1, origin_token_address: $v},
-        destination_network: $mn, destination_address: $d, amount: "0", metadata: $md}' "${CASE_DIR}/recovery.json" >/dev/null \
+        destination_network: $mn, destination_address: $d, amount: "0", metadata: $md, origin_SC_funds: null}' "${CASE_DIR}/recovery.json" >/dev/null \
     || { cat "${CASE_DIR}/recovery.json" >&2; fail "unexpected recovery.json"; }
 # recovery.json format checks (offline): each broken file must be refused with its reason.
 bad_recovery() { # <description> <jq filter> <expected message>
@@ -280,6 +280,10 @@ bad_recovery "no outputs" '.outputs = []' "outputs: required"
 bad_recovery "an unknown top-level field" '.x = 1' "unknown field: x"
 bad_recovery "an unknown output field" '.outputs[0].locked_contract = "0x"' "outputs[0]: unknown field: locked_contract"
 bad_recovery "a missing field" 'del(.outputs[1].amount)' "outputs[1]: missing field: amount"
+bad_recovery "no origin_SC_funds" 'del(.outputs[0].origin_SC_funds)' "outputs[0]: missing field: origin_SC_funds"
+bad_recovery "a null origin_SC_funds with funds" '.outputs[0].origin_SC_funds = null' "outputs[0].origin_SC_funds: must be an address"
+bad_recovery "a bad origin_SC_funds" '.outputs[0].origin_SC_funds = "0x12"' "outputs[0].origin_SC_funds: must be an address"
+bad_recovery "an origin_SC_funds without funds" '.outputs[1].origin_SC_funds = .outputs[0].origin_SC_funds' "outputs[1].origin_SC_funds: must be null when amount"
 bad_recovery "a deposit_count" '.outputs[0].deposit_count = 0' "outputs[0]: unknown field: deposit_count"
 bad_recovery "an unknown leaf type" '.outputs[0].leaf_type = "Asset"' "leaf_type: must be \"Transfer\""
 bad_recovery "a numeric leaf type" '.outputs[0].leaf_type = 0' "leaf_type: must be \"Transfer\""
@@ -440,13 +444,16 @@ grep -q "to network 5" "${WORKDIR}/neg.out" || fail "expected the destination-ne
 
 # Negative: a BridgeEvent the bridge did not back with funds (the mock's fakeBridgeEvent emits an
 # ETH bridgeAsset without taking ETH): the balance check must catch it.
+# The vault does lose 5 wei (sent to DEST), so origin_SC_funds resolves and the balance check is
+# what refuses it.
 CASE_FAKE="${WORKDIR}/case-fake"
 cp -r "${CASE_DIR}" "${CASE_FAKE}"
 rm "${CASE_FAKE}/recovery.json"
 cat >"${CASE_FAKE}/move.sh" <<FAKE
 #!/bin/bash
 set -euo pipefail
-cast send --unlocked --from "${OWNER}" "${BRIDGE}" "fakeBridgeEvent(address,uint256)" "${DEST}" 5 --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${DEST}" 5 0x --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${BRIDGE}" 0 "$(cast calldata "fakeBridgeEvent(address,uint256)" "${DEST}" 5)" --json --rpc-url "\${RPC_URL}"
 FAKE
 expect_fail "prepare-submission.sh refuses BridgeEvents the bridge did not back with funds" \
     pkg "${CASE_FAKE}" --allow-test-fork --output-dir "${OUT_DIR}"
@@ -519,10 +526,10 @@ ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.s
     --keystore "${KS_DIR}/owner" --password pw >/dev/null
 pkg "${CASE_EOA}" --allow-test-fork --output-dir "${WORKDIR}/out-eoa" >"${WORKDIR}/package-eoa.out" \
     || { cat "${WORKDIR}/package-eoa.out" >&2; fail "packaging the EOA-path case failed"; }
-jq -e --arg d "$(cs "${DEST}")" '(.outputs | length) == 1
-    and .outputs[0].leaf_type == "Transfer" and .outputs[0].destination_address == $d' \
+jq -e --arg d "$(cs "${DEST}")" --arg v "$(cs "${VAULT}")" '(.outputs | length) == 1
+    and .outputs[0].leaf_type == "Transfer" and .outputs[0].destination_address == $d and .outputs[0].origin_SC_funds == $v' \
     "${CASE_EOA}/recovery.json" >/dev/null || { cat "${CASE_EOA}/recovery.json" >&2; fail "unexpected recovery.json for the EOA path"; }
-echo "  package ok with the bridge called by an EOA (the vault withdrew to it first)"
+echo "  package ok with the bridge called by an EOA (the vault withdrew to it first; origin_SC_funds is the vault)"
 
 # Negative: a bridgeAsset of a token native to this chain (origin network = the bridge's
 # networkID()) is refused.
@@ -560,13 +567,14 @@ cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes
 TOKENS
 expect_fail "prepare-submission.sh writes recovery.json for the token case, then asks for the owner's signature" \
     pkg "${CASE_TOKENS}" --allow-test-fork --output-dir "${WORKDIR}/out-tokens"
+[ -f "${CASE_TOKENS}/recovery.json" ] || { cat "${WORKDIR}/neg.out" >&2; fail "recovery.json not written for the token case"; }
 ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.sh" "${CASE_TOKENS}/signatures.json" \
     --keystore "${KS_DIR}/owner" --password pw >/dev/null
 pkg "${CASE_TOKENS}" --allow-test-fork --output-dir "${WORKDIR}/out-tokens" >"${WORKDIR}/package-tokens.out" \
     || { cat "${WORKDIR}/package-tokens.out" >&2; fail "packaging the token case failed"; }
 jq -e --arg l1 "$(cs "${L1_TOKEN}")" --arg v "$(cs "${VAULT}")" '(.outputs | length) == 2
-    and (.outputs[0] | .leaf_type == "Transfer" and .token_info == {origin_network: 0, origin_token_address: $l1} and .amount == "200")
-    and (.outputs[1] | .leaf_type == "Message" and .token_info.origin_token_address == $v and .amount == "7" and .metadata == "0x")' \
+    and (.outputs[0] | .leaf_type == "Transfer" and .token_info == {origin_network: 0, origin_token_address: $l1} and .amount == "200" and .origin_SC_funds == $v)
+    and (.outputs[1] | .leaf_type == "Message" and .token_info.origin_token_address == $v and .amount == "7" and .metadata == "0x" and .origin_SC_funds == $v)' \
     "${CASE_TOKENS}/recovery.json" >/dev/null || { cat "${CASE_TOKENS}/recovery.json" >&2; fail "unexpected recovery.json for the token case"; }
 mkdir -p "${WORKDIR}/unpacked-tokens"
 tar -xzf "${WORKDIR}"/out-tokens/case-tokens-*.tgz -C "${WORKDIR}/unpacked-tokens"
@@ -627,10 +635,71 @@ pkg "${CASE_CTRL}" --allow-test-fork --output-dir "${WORKDIR}/out-ctrl" >"${WORK
     || { cat "${WORKDIR}/package-ctrl.out" >&2; fail "packaging the contract-sender case failed"; }
 PKG_CTRL="$(ls "${WORKDIR}"/out-ctrl/case-ctrl-*.tgz)"
 tar -xzf "${PKG_CTRL}" -C "${WORKDIR}/unpacked"
-jq -e --arg c "${CONTROLLER}" '(.contract_senders | length) == 1 and ((.contract_senders[0] | ascii_downcase) == ($c | ascii_downcase))
-    and .required_signers == []' \
+jq -e --arg c "${CONTROLLER}" --arg v2 "$(cs "${VAULT2}")" '(.contract_senders | length) == 1 and ((.contract_senders[0] | ascii_downcase) == ($c | ascii_downcase))
+    and .required_signers == [] and .outputs[0].origin_SC_funds == $v2 and .outputs[1].origin_SC_funds == null' \
     "${WORKDIR}/unpacked/case-ctrl/manifest.json" >/dev/null || fail "unexpected manifest for the contract-sender case"
 echo "  package ok with a contract sender (nobody signs)"
+
+# origin_SC_funds. Each case starts from a fresh fork, so the vaults hold their initial funds.
+new_case() { # <dir>: a copy of the main case without recovery.json nor signatures
+    cp -r "${CASE_DIR}" "$1"
+    rm "$1/recovery.json"
+    echo '[]' >"$1/signatures.json"
+}
+HALF_ETH=500000000000000000
+# Positive: two contracts lose ETH (the vault and vault2), so each bridge call is followed up its
+# own call chain to the vault that made it.
+CASE_MULTI="${WORKDIR}/case-multi"
+new_case "${CASE_MULTI}"
+{ printf '#!/bin/bash\nset -euo pipefail\n'
+  bridge_calls "${VAULT}" "${OWNER}" "${DEST}" "${HALF_ETH}"
+  bridge_calls "${VAULT2}" "${CONTROLLER}" "${DEST}" "${HALF_ETH}"; } >"${CASE_MULTI}/move.sh"
+expect_fail "prepare-submission.sh writes recovery.json for two vaults, then asks for the owner's signature" \
+    pkg "${CASE_MULTI}" --allow-test-fork --output-dir "${WORKDIR}/out-multi"
+jq -e --arg v "$(cs "${VAULT}")" --arg v2 "$(cs "${VAULT2}")" \
+    '[.outputs[].origin_SC_funds] == [$v, null, $v2, null]' "${CASE_MULTI}/recovery.json" >/dev/null \
+    || { cat "${CASE_MULTI}/recovery.json" >&2; fail "unexpected origin_SC_funds with two vaults"; }
+echo "  origin_SC_funds per bridge call with two vaults"
+
+# Negative: an EOA bridges its own ETH; no contract lost it.
+CASE_OWN="${WORKDIR}/case-own"
+new_case "${CASE_OWN}"
+cat >"${CASE_OWN}/move.sh" <<OWNFUNDS
+#!/bin/bash
+set -euo pipefail
+cast send --unlocked --from "${OWNER}" "${BRIDGE}" "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "${DEST}" 1 0x0000000000000000000000000000000000000000 true 0x --value 1 --json --rpc-url "\${RPC_URL}"
+OWNFUNDS
+expect_fail "prepare-submission.sh refuses an output no contract paid for" \
+    pkg "${CASE_OWN}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "could not find the contract that held the funds" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the origin_SC_funds message"; }
+
+# Negative: the vault gives the owner 1 ETH, the owner bridges 2 (one of its own): the vault is
+# credited more than it lost.
+CASE_OVER="${WORKDIR}/case-over"
+new_case "${CASE_OVER}"
+cat >"${CASE_OVER}/move.sh" <<OVER
+#!/bin/bash
+set -euo pipefail
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${OWNER}" 1000000000000000000 0x --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "${OWNER}" "${BRIDGE}" "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "${DEST}" 2000000000000000000 0x0000000000000000000000000000000000000000 true 0x --value 2000000000000000000 --json --rpc-url "\${RPC_URL}"
+OVER
+expect_fail "prepare-submission.sh refuses crediting a contract more than it lost" \
+    pkg "${CASE_OVER}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "but it only lost" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the credited-more-than-lost message"; }
+
+# Negative: two vaults lose ETH and one bridge call comes from an EOA: its call chain reaches no vault.
+CASE_AMBIG="${WORKDIR}/case-ambig"
+new_case "${CASE_AMBIG}"
+{ cat <<AMBIG
+#!/bin/bash
+set -euo pipefail
+cast send --unlocked --from "${OWNER}" "${VAULT}" "execute(address,uint256,bytes)" "${OWNER}" 1000000000000000000 0x --json --rpc-url "\${RPC_URL}"
+cast send --unlocked --from "${OWNER}" "${BRIDGE}" "bridgeAsset(uint32,address,uint256,address,bool,bytes)" 0 "${DEST}" 1000000000000000000 0x0000000000000000000000000000000000000000 true 0x --value 1000000000000000000 --json --rpc-url "\${RPC_URL}"
+AMBIG
+  bridge_calls "${VAULT2}" "${CONTROLLER}" "${DEST}" "${HALF_ETH}"; } >"${CASE_AMBIG}/move.sh"
+expect_fail "prepare-submission.sh refuses a bridge call whose chain reaches none of several contracts" \
+    pkg "${CASE_AMBIG}" --allow-test-fork --output-dir "${OUT_DIR}"
+grep -q "could not find the contract that held the funds" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the origin_SC_funds message"; }
 
 # ---------------------------------------------------------------- 9. verify-submission.sh
 step "9. submission/verify-submission.sh on the package"

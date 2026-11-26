@@ -196,7 +196,8 @@ the last step does it.
    writes `cases/<your-case-id>/recovery.json` from its `BridgeEvent`s — `{"version": 1, "outputs":
    [...]}`, one output per bridge call with the `BridgeEvent` fields as aggkit names them (`leaf_type`: `"Transfer"`
    for bridgeAsset, `"Message"` for bridgeMessage; `token_info` (`origin_network`, `origin_token_address`), `destination_network`,
-   `destination_address`, `amount`, `metadata`). **Check it**: it is what you
+   `destination_address`, `amount`, `metadata`) plus `origin_SC_funds`, the contract that held
+   the funds before `move.sh` (`null` for an output that moves nothing). **Check it**: it is what you
    recover. To change it, change `move.sh`, delete `recovery.json` and run again.
 
 4. **Fill in `signatures.json`.** Once `recovery.json` and `move.sh` are **final** (the signed message

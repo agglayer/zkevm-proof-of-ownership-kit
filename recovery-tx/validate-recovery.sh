@@ -13,7 +13,9 @@
 #     { "leaf_type": "Transfer" (bridgeAsset) | "Message" (bridgeMessage),
 #       "token_info": { "origin_network": <uint32>, "origin_token_address": "0x..." },
 #       "destination_network": <uint32> (0 for a Transfer), "destination_address": "0x...",
-#       "amount": "<base units, as a string>", "metadata": "0x<hex bytes>" }
+#       "amount": "<base units, as a string>", "metadata": "0x<hex bytes>",
+#       "origin_SC_funds": "0x..." (the contract that held the funds before move.sh; null if and
+#                         only if amount is "0") }
 #
 # Requires: jq.
 #
@@ -44,7 +46,7 @@ errors="$(jq -r '
   def addr: type == "string" and test("^0x[0-9a-fA-F]{40}$");
   def uint32: type == "number" and . == floor and . >= 0 and . <= 4294967295;
   ["leaf_type", "token_info", "destination_network", "destination_address",
-   "amount", "metadata"] as $fields
+   "amount", "metadata", "origin_SC_funds"] as $fields
   | ["origin_network", "origin_token_address"] as $token_fields
   | . as $r
   | if type != "object" then "the top level must be a JSON object"
@@ -76,6 +78,10 @@ errors="$(jq -r '
                   | if ($o[$k] | addr) then empty else "\($w).\($k): must be an address (0x + 40 hex chars)" end ),
                 ( if ($o.amount | type) == "string" and ($o.amount | test("^(0|[1-9][0-9]*)$")) then empty
                   else "\($w).amount: must be an integer in base units, written as a string" end ),
+                ( if ($o | has("origin_SC_funds")) | not then empty
+                  elif $o.amount == "0" then (if $o.origin_SC_funds == null then empty else "\($w).origin_SC_funds: must be null when amount is \"0\"" end)
+                  elif ($o.origin_SC_funds | addr) then empty
+                  else "\($w).origin_SC_funds: must be an address (0x + 40 hex chars)" end ),
                 ( if ($o.metadata | type) == "string" and ($o.metadata | test("^0x([0-9a-fA-F]{2})*$")) then empty
                   else "\($w).metadata: must be hex bytes (0x...)" end ),
                 ( if $o.leaf_type == "Transfer" and $o.destination_network != 0 then "\($w).destination_network: must be 0 (Ethereum) for a Transfer" else empty end )
