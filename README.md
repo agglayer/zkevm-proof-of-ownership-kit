@@ -196,9 +196,8 @@ the last step does it.
    writes `cases/<your-case-id>/recovery.json` from its `BridgeEvent`s — `{"version": 1, "outputs":
    [...], "origin_SC_funds": [...]}`, one output per bridge call with the `BridgeEvent` fields as aggkit names them (`leaf_type`: `"Transfer"`
    for bridgeAsset, `"Message"` for bridgeMessage; `token_info` (`origin_network`, `origin_token_address`), `destination_network`,
-   `destination_address`, `amount`, `metadata`) plus `origin_SC_funds`, the contract that held
-   the funds before `move.sh` (`null` for an output that moves nothing). A second section, `origin_SC_funds`, sums them per
-   contract: each contract the funds came from, with the tokens it bridged out and the total of
+   `destination_address`, `amount`, `metadata`), and a second section, `origin_SC_funds`: each
+   contract that held the funds before `move.sh`, with the tokens it bridged out and the total of
    each. **Check it**: it is what you
    recover. To change it, change `move.sh`, delete `recovery.json` and run again.
 

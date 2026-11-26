@@ -5,7 +5,7 @@
 # of the packaging/verification steps).
 #
 # Rules: only the fields below, all required; addresses are 0x + 40 hex; networks are uint32;
-# `outputs` has at least one entry; `origin_SC_funds` is exactly what the outputs add up to.
+# `outputs` has at least one entry; per token, `origin_SC_funds` totals what the outputs bridge.
 #
 # Fields:
 #   version    1
@@ -13,15 +13,13 @@
 #     { "leaf_type": "Transfer" (bridgeAsset) | "Message" (bridgeMessage),
 #       "token_info": { "origin_network": <uint32>, "origin_token_address": "0x..." },
 #       "destination_network": <uint32> (0 for a Transfer), "destination_address": "0x...",
-#       "amount": "<base units, as a string>", "metadata": "0x<hex bytes>",
-#       "origin_SC_funds": "0x..." (the contract that held the funds before move.sh; null if and
-#                         only if amount is "0") }
-#   origin_SC_funds[]  the outputs summed per contract, one entry per output.origin_SC_funds (in the
-#                      order the outputs first name it), outputs of amount "0" left out:
+#       "amount": "<base units, as a string>", "metadata": "0x<hex bytes>" }
+#   origin_SC_funds[]  the contracts that held the funds before move.sh, each once:
 #     { "address": "0x...",
 #       "tokens": [ { "token_info": { "origin_network": <uint32>, "origin_token_address": "0x..." },
-#                     "amount": "<total base units bridged out, as a string>" } ] }
-#     The token of a Transfer is its token_info; of a Message, ETH (0 / 0x0...0).
+#                     "amount": "<total base units it bridged out, as a string>" } ] }
+#     Each token at most once per contract. Per token, the amounts over all contracts must add up
+#     to the outputs' amounts: a Transfer bridges its token_info, a Message ETH (0 / 0x0...0).
 #
 # Requires: jq.
 #
@@ -54,12 +52,11 @@ errors="$(jq -r '
     | reduce range(0; [($x | length), ($y | length)] | max) as $i ({c: 0, d: []};
         (($x[$i] // 0) + ($y[$i] // 0) + .c) as $t | .d += [$t % 10] | .c = (($t - $t % 10) / 10))
     | (if .c > 0 then .d + [.c] else .d end) | reverse | map(. + 48) | implode;
-  def uniq: reduce .[] as $v ([]; if any(.[]; . == $v) then . else . + [$v] end);
   def lc_token: {origin_network, origin_token_address: (.origin_token_address | ascii_downcase)};
   def addr: type == "string" and test("^0x[0-9a-fA-F]{40}$");
   def uint32: type == "number" and . == floor and . >= 0 and . <= 4294967295;
   ["leaf_type", "token_info", "destination_network", "destination_address",
-   "amount", "metadata", "origin_SC_funds"] as $fields
+   "amount", "metadata"] as $fields
   | ["origin_network", "origin_token_address"] as $token_fields
   | . as $r
   | if type != "object" then "the top level must be a JSON object"
@@ -91,10 +88,6 @@ errors="$(jq -r '
                   | if ($o[$k] | addr) then empty else "\($w).\($k): must be an address (0x + 40 hex chars)" end ),
                 ( if ($o.amount | type) == "string" and ($o.amount | test("^(0|[1-9][0-9]*)$")) then empty
                   else "\($w).amount: must be an integer in base units, written as a string" end ),
-                ( if ($o | has("origin_SC_funds")) | not then empty
-                  elif $o.amount == "0" then (if $o.origin_SC_funds == null then empty else "\($w).origin_SC_funds: must be null when amount is \"0\"" end)
-                  elif ($o.origin_SC_funds | addr) then empty
-                  else "\($w).origin_SC_funds: must be an address (0x + 40 hex chars)" end ),
                 ( if ($o.metadata | type) == "string" and ($o.metadata | test("^0x([0-9a-fA-F]{2})*$")) then empty
                   else "\($w).metadata: must be hex bytes (0x...)" end ),
                 ( if $o.leaf_type == "Transfer" and $o.destination_network != 0 then "\($w).destination_network: must be 0 (Ethereum) for a Transfer" else empty end )
@@ -123,28 +116,30 @@ errors="$(jq -r '
                     end )
                 end ] ) as $shape
           | if ($shape | length) > 0 then $shape[]
-            # Only once the outputs are well-formed: the section must be their sums.
-            elif ($r.outputs | type) != "array"
-                 or any($r.outputs[]; (type != "object") or ((.amount | type) != "string")
-                        or (.amount != "0" and (((.origin_SC_funds | addr) | not)
-                            or ((.token_info | type) != "object")
-                            or ((.token_info.origin_token_address | addr) | not)
-                            or ((.token_info.origin_network | uint32) | not)))) then empty
             else
-              ( [ $r.outputs[] | select(.amount != "0")
-                  | {o: (.origin_SC_funds | ascii_downcase),
-                     t: (if .leaf_type == "Transfer" then (.token_info | lc_token)
-                         else {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"} end),
-                     a: .amount} ] ) as $f
-              | ( [ $f | map(.o) | uniq | .[] as $o
-                    | {address: $o,
-                       tokens: [ $f | map(select(.o == $o) | .t) | uniq | .[] as $t
-                         | {token_info: $t,
-                            amount: (reduce ($f[] | select(.o == $o and .t == $t) | .a) as $a ("0"; bigadd(.; $a)) | sub("^0+(?=.)"; ""))} ]} ] ) as $want
-              | ( [ $r.origin_SC_funds[] | {address: (.address | ascii_downcase),
-                    tokens: [ .tokens[] | {token_info: (.token_info | lc_token), amount} ]} ] ) as $got
-              | if $got == $want then empty
-                else "origin_SC_funds: does not match the outputs; it should be \($want | tojson)" end
+              ( [ $r.origin_SC_funds[] | .address | ascii_downcase ] | group_by(.)[] | select(length > 1)
+                | "origin_SC_funds: \(.[0]) is listed more than once" ),
+              ( $r.origin_SC_funds | to_entries[]
+                | [ .value.tokens[] | .token_info | lc_token ] as $ts
+                | select(($ts | unique | length) != ($ts | length))
+                | "origin_SC_funds[\(.key)].tokens: a token is listed more than once" ),
+              # Only once the outputs are well-formed: per token, the section totals the outputs.
+              ( if ($r.outputs | type) != "array"
+                   or any($r.outputs[]; (type != "object") or ((.amount | type) != "string") or ((.amount | test("^(0|[1-9][0-9]*)$")) | not)
+                          or (.leaf_type == "Transfer" and (((.token_info | type) != "object")
+                              or ((.token_info.origin_token_address | addr) | not)
+                              or ((.token_info.origin_network | uint32) | not)))) then empty
+                else
+                  def totals: group_by(.t) | map({token_info: .[0].t,
+                    amount: (reduce .[].a as $a ("0"; bigadd(.; $a)) | sub("^0+(?=.)"; ""))});
+                  ( [ $r.outputs[] | select(.amount != "0")
+                      | {t: (if .leaf_type == "Transfer" then (.token_info | lc_token)
+                             else {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"} end),
+                         a: .amount} ] | totals ) as $want
+                  | ( [ $r.origin_SC_funds[].tokens[] | {t: (.token_info | lc_token), a: .amount} ] | totals ) as $got
+                  | if $got == $want then empty
+                    else "origin_SC_funds: the totals per token do not match the outputs; the outputs bridge \($want | tojson)" end
+                end )
             end
         end )
     end

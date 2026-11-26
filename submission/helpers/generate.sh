@@ -367,9 +367,9 @@ done < <(jq -r --arg eth "${eth_origin}" '
 if [ -f "${recovery_path}" ]; then
     if [ "$(jq -S . "${recovery_path}")" != "$(jq -S . <<<"${built}")" ]; then
         echo "recovery.json in the case:" >&2
-        jq -c '.outputs[]' "${recovery_path}" | sed 's/^/  /' >&2
+        jq -c '.outputs[], {origin_SC_funds}' "${recovery_path}" | sed 's/^/  /' >&2
         echo "what move.sh gives on this fork:" >&2
-        jq -c '.outputs[]' <<<"${built}" | sed 's/^/  /' >&2
+        jq -c '.outputs[], {origin_SC_funds}' <<<"${built}" | sed 's/^/  /' >&2
         die "${case_id}/recovery.json does not match what move.sh does. If you changed move.sh, delete recovery.json and run this again to regenerate it — then sign again (the signatures cover both files)."
     fi
     echo "OK   recovery.json matches the BridgeEvents of move.sh ($(jq '.outputs | length' "${recovery_path}") output(s))"

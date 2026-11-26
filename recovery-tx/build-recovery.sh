@@ -3,31 +3,29 @@
 # output per BridgeEvent that the zkEVM bridge emitted in them, in order. Each output is a
 # bridge exit Polygon recovers through the certificate, with the BridgeEvent's fields, named as
 # aggkit's bridgesync names them (the origin pair grouped as token_info and leaf_type labeled, as
-# in a certificate's bridge exit; the deposit count is left out), plus origin_SC_funds:
+# in a certificate's bridge exit; the deposit count is left out):
 #   leaf_type            "Transfer" (bridgeAsset) or "Message" (bridgeMessage)
 #   token_info           {origin_network, origin_token_address}: the token (bridgeAsset; ETH is
 #                        0 / 0x0...0) or the sender of the message (bridgeMessage)
 #   destination_network, destination_address  where it goes; a bridgeAsset must go to network 0
 #   amount               base units, as a string (ETH carried, for a bridgeMessage)
 #   metadata             hex, as emitted (not decoded)
-#   origin_SC_funds      the contract that held the funds before move.sh (null when the output
-#                        moves nothing: amount "0")
 #
 # A bridgeAsset of a token native to this chain (origin_network = the bridge's networkID(), 1 on
 # zkEVM) is refused: a recovery only bridges ETH and wrapped tokens.
 #
-# origin_SC_funds is found by balance diff over all the transactions: per asset (ETH, from the
-# value of every call in the call traces; a wrapped token, from its Transfer logs), the
-# candidates are the contracts (code at the block before move.sh, not the bridge) whose balance
-# of it went down. One candidate: it is the origin of every output of that asset. Several: each
-# bridge call is followed up its own call chain (the bridge's caller, then that frame's caller...)
-# to the first candidate. The outputs credited to a contract may not total more than it lost.
-# No candidate, or a call chain that reaches none, is refused.
+# A second section, origin_SC_funds, lists the contracts that held the funds before move.sh: for
+# each (in the order of the outputs it paid for), the tokens it bridged out (token_info; ETH is
+# 0 / 0x0...0, also when a bridgeMessage carries it) and the total amount of each. Outputs of
+# amount "0" pay for nothing.
 #
-# A second section, origin_SC_funds, sums the outputs per contract: for each origin_SC_funds (in
-# the order the outputs first name it), the tokens it bridged out (token_info; ETH is 0 / 0x0...0,
-# also when a bridgeMessage carries it) and the total amount of each. Outputs of amount "0" are
-# not in it.
+# Each output's contract is found by balance diff over all the transactions: per asset (ETH, from
+# the value of every call in the call traces; a wrapped token, from its Transfer logs), the
+# candidates are the contracts (code at the block before move.sh, not the bridge) whose balance
+# of it went down. One candidate: it paid for every output of that asset. Several: each bridge
+# call is followed up its own call chain (the bridge's caller, then that frame's caller...) to the
+# first candidate. The outputs credited to a contract may not total more than it lost. No
+# candidate, or a call chain that reaches none, is refused.
 #
 # The result goes to stdout ({"version": 1, "outputs": [...], "origin_SC_funds": [...]});
 # messages go to stderr.
@@ -271,8 +269,7 @@ jq -s --slurpfile cs "${work}/checksum.json" --slurpfile sums "${work}/sums.json
     def uniq: reduce .[] as $v ([]; if any(.[]; . == $v) then . else . + [$v] end);
     map(select(._asset != null)) as $funded
     | {version: 1,
-       outputs: map(del(._asset, ._chain, ._tx)
-                    | .origin_SC_funds = (if .origin_SC_funds == null then null else $cs[0][.origin_SC_funds] end)),
+       outputs: map(del(._asset, ._chain, ._tx, .origin_SC_funds)),
        origin_SC_funds: [$funded | map(.origin_SC_funds) | uniq | .[] as $o
          | {address: $cs[0][$o],
             tokens: [$funded | map(select(.origin_SC_funds == $o) | ._asset) | uniq | .[] as $a

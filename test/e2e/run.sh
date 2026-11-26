@@ -265,9 +265,9 @@ jq -e --arg v "$(cs "${VAULT}")" --arg d "$(cs "${DEST}")" --arg amount "${ASSET
     --argjson mn "${MESSAGE_NETWORK}" --arg md "${MESSAGE_METADATA}" '
     .version == 1 and (.outputs | length) == 2
     and .outputs[0] == {leaf_type: "Transfer", token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"},
-        destination_network: 0, destination_address: $d, amount: $amount, metadata: "0x", origin_SC_funds: $v}
+        destination_network: 0, destination_address: $d, amount: $amount, metadata: "0x"}
     and .outputs[1] == {leaf_type: "Message", token_info: {origin_network: 1, origin_token_address: $v},
-        destination_network: $mn, destination_address: $d, amount: "0", metadata: $md, origin_SC_funds: null}
+        destination_network: $mn, destination_address: $d, amount: "0", metadata: $md}
     and .origin_SC_funds == [{address: $v, tokens: [{token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}, amount: $amount}]}]' "${CASE_DIR}/recovery.json" >/dev/null \
     || { cat "${CASE_DIR}/recovery.json" >&2; fail "unexpected recovery.json"; }
 # recovery.json format checks (offline): each broken file must be refused with its reason.
@@ -281,18 +281,16 @@ bad_recovery "no outputs" '.outputs = []' "outputs: required"
 bad_recovery "an unknown top-level field" '.x = 1' "unknown field: x"
 bad_recovery "an unknown output field" '.outputs[0].locked_contract = "0x"' "outputs[0]: unknown field: locked_contract"
 bad_recovery "a missing field" 'del(.outputs[1].amount)' "outputs[1]: missing field: amount"
-bad_recovery "no origin_SC_funds" 'del(.outputs[0].origin_SC_funds)' "outputs[0]: missing field: origin_SC_funds"
-bad_recovery "a null origin_SC_funds with funds" '.outputs[0].origin_SC_funds = null' "outputs[0].origin_SC_funds: must be an address"
-bad_recovery "a bad origin_SC_funds" '.outputs[0].origin_SC_funds = "0x12"' "outputs[0].origin_SC_funds: must be an address"
-bad_recovery "an origin_SC_funds without funds" '.outputs[1].origin_SC_funds = .outputs[0].origin_SC_funds' "outputs[1].origin_SC_funds: must be null when amount"
+bad_recovery "an origin_SC_funds in an output" '.outputs[0].origin_SC_funds = .origin_SC_funds[0].address' "outputs[0]: unknown field: origin_SC_funds"
 bad_recovery "no origin_SC_funds section" 'del(.origin_SC_funds)' "missing field: origin_SC_funds"
 bad_recovery "an origin_SC_funds section that is not a list" '.origin_SC_funds = {}' "origin_SC_funds: must be a list"
 bad_recovery "an origin_SC_funds entry without tokens" '.origin_SC_funds[0].tokens = []' "origin_SC_funds[0].tokens: must be a non-empty list"
 bad_recovery "an unknown origin_SC_funds field" '.origin_SC_funds[0].lost = "1"' "origin_SC_funds[0]: unknown field: lost"
 bad_recovery "a zero amount in origin_SC_funds" '.origin_SC_funds[0].tokens[0].amount = "0"' "origin_SC_funds[0].tokens[0].amount: must be a positive integer"
-bad_recovery "an origin_SC_funds total that does not match" '.origin_SC_funds[0].tokens[0].amount = "1"' "origin_SC_funds: does not match the outputs"
-bad_recovery "an origin_SC_funds section with another contract" '.origin_SC_funds[0].address = .outputs[0].destination_address' "origin_SC_funds: does not match the outputs"
-bad_recovery "an output origin that the section does not list" '.outputs[0].origin_SC_funds = .outputs[0].destination_address' "origin_SC_funds: does not match the outputs"
+bad_recovery "an origin_SC_funds total that does not match" '.origin_SC_funds[0].tokens[0].amount = "1"' "origin_SC_funds: the totals per token do not match the outputs"
+bad_recovery "an origin_SC_funds section with a token no output bridges" '.origin_SC_funds[0].tokens[0].token_info.origin_network = 5' "origin_SC_funds: the totals per token do not match the outputs"
+bad_recovery "a contract listed twice in origin_SC_funds" '.origin_SC_funds += .origin_SC_funds' "is listed more than once"
+bad_recovery "a token listed twice for a contract" '.origin_SC_funds[0].tokens += .origin_SC_funds[0].tokens' "origin_SC_funds[0].tokens: a token is listed more than once"
 bad_recovery "a deposit_count" '.outputs[0].deposit_count = 0' "outputs[0]: unknown field: deposit_count"
 bad_recovery "an unknown leaf type" '.outputs[0].leaf_type = "Asset"' "leaf_type: must be \"Transfer\""
 bad_recovery "a numeric leaf type" '.outputs[0].leaf_type = 0' "leaf_type: must be \"Transfer\""
@@ -536,7 +534,7 @@ ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.s
 pkg "${CASE_EOA}" --allow-test-fork --output-dir "${WORKDIR}/out-eoa" >"${WORKDIR}/package-eoa.out" \
     || { cat "${WORKDIR}/package-eoa.out" >&2; fail "packaging the EOA-path case failed"; }
 jq -e --arg d "$(cs "${DEST}")" --arg v "$(cs "${VAULT}")" '(.outputs | length) == 1
-    and .outputs[0].leaf_type == "Transfer" and .outputs[0].destination_address == $d and .outputs[0].origin_SC_funds == $v' \
+    and .outputs[0].leaf_type == "Transfer" and .outputs[0].destination_address == $d and [.origin_SC_funds[].address] == [$v]' \
     "${CASE_EOA}/recovery.json" >/dev/null || { cat "${CASE_EOA}/recovery.json" >&2; fail "unexpected recovery.json for the EOA path"; }
 echo "  package ok with the bridge called by an EOA (the vault withdrew to it first; origin_SC_funds is the vault)"
 
@@ -582,8 +580,8 @@ ADDRESS="${OWNER}" NONCE="${NONCE}" "${repo_root}/ownership-proof/sign-message.s
 pkg "${CASE_TOKENS}" --allow-test-fork --output-dir "${WORKDIR}/out-tokens" >"${WORKDIR}/package-tokens.out" \
     || { cat "${WORKDIR}/package-tokens.out" >&2; fail "packaging the token case failed"; }
 jq -e --arg l1 "$(cs "${L1_TOKEN}")" --arg v "$(cs "${VAULT}")" '(.outputs | length) == 2
-    and (.outputs[0] | .leaf_type == "Transfer" and .token_info == {origin_network: 0, origin_token_address: $l1} and .amount == "200" and .origin_SC_funds == $v)
-    and (.outputs[1] | .leaf_type == "Message" and .token_info.origin_token_address == $v and .amount == "7" and .metadata == "0x" and .origin_SC_funds == $v)
+    and (.outputs[0] | .leaf_type == "Transfer" and .token_info == {origin_network: 0, origin_token_address: $l1} and .amount == "200")
+    and (.outputs[1] | .leaf_type == "Message" and .token_info.origin_token_address == $v and .amount == "7" and .metadata == "0x")
     and .origin_SC_funds == [{address: $v, tokens: [{token_info: {origin_network: 0, origin_token_address: $l1}, amount: "200"},
                                                     {token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}, amount: "7"}]}]' \
     "${CASE_TOKENS}/recovery.json" >/dev/null || { cat "${CASE_TOKENS}/recovery.json" >&2; fail "unexpected recovery.json for the token case"; }
@@ -647,8 +645,10 @@ pkg "${CASE_CTRL}" --allow-test-fork --output-dir "${WORKDIR}/out-ctrl" >"${WORK
 PKG_CTRL="$(ls "${WORKDIR}"/out-ctrl/case-ctrl-*.tgz)"
 tar -xzf "${PKG_CTRL}" -C "${WORKDIR}/unpacked"
 jq -e --arg c "${CONTROLLER}" --arg v2 "$(cs "${VAULT2}")" '(.contract_senders | length) == 1 and ((.contract_senders[0] | ascii_downcase) == ($c | ascii_downcase))
-    and .required_signers == [] and .outputs[0].origin_SC_funds == $v2 and .outputs[1].origin_SC_funds == null' \
+    and .required_signers == []' \
     "${WORKDIR}/unpacked/case-ctrl/manifest.json" >/dev/null || fail "unexpected manifest for the contract-sender case"
+jq -e --arg v2 "$(cs "${VAULT2}")" '[.origin_SC_funds[].address] == [$v2]' "${WORKDIR}/unpacked/case-ctrl/recovery.json" >/dev/null \
+    || fail "unexpected origin_SC_funds for the contract-sender case"
 echo "  package ok with a contract sender (nobody signs)"
 
 # origin_SC_funds. Each case starts from a fresh fork, so the vaults hold their initial funds.
@@ -668,11 +668,10 @@ new_case "${CASE_MULTI}"
 expect_fail "prepare-submission.sh writes recovery.json for two vaults, then asks for the owner's signature" \
     pkg "${CASE_MULTI}" --allow-test-fork --output-dir "${WORKDIR}/out-multi"
 jq -e --arg v "$(cs "${VAULT}")" --arg v2 "$(cs "${VAULT2}")" \
-    '[.outputs[].origin_SC_funds] == [$v, null, $v2, null]
-    and .origin_SC_funds == [{address: $v, tokens: [{token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}, amount: "500000000000000000"}]},
+    '.origin_SC_funds == [{address: $v, tokens: [{token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}, amount: "500000000000000000"}]},
                              {address: $v2, tokens: [{token_info: {origin_network: 0, origin_token_address: "0x0000000000000000000000000000000000000000"}, amount: "500000000000000000"}]}]' "${CASE_MULTI}/recovery.json" >/dev/null \
     || { cat "${CASE_MULTI}/recovery.json" >&2; fail "unexpected origin_SC_funds with two vaults"; }
-echo "  origin_SC_funds per bridge call with two vaults"
+echo "  origin_SC_funds lists both vaults, each with what its bridge calls took"
 
 # Negative: an EOA bridges its own ETH; no contract lost it.
 CASE_OWN="${WORKDIR}/case-own"

@@ -14,7 +14,7 @@
    the vault call `bridgeAsset` (4 ETH to network 0) and `bridgeMessage`; runs it with
    `recovery-tx/run.sh` and builds `recovery.json` (two outputs) with `recovery-tx/build-recovery.sh`;
    then checks that `validate-recovery.sh` refuses broken variants of it (version, missing/unknown
-   fields, leaf type, network, amount, address, metadata, origin_SC_funds, the origin_SC_funds section and its sums, uint32 range);
+   fields, leaf type, network, amount, address, metadata, the origin_SC_funds section and its totals, uint32 range);
 6. signs with the owner (and the destination, an extra valid signature; temporary keystore), then checks with
    `recovery-tx/list-impersonated.sh --signatures` and `ownership-proof/verify-signature.sh`;
 7. checks that a tampered signature does not verify;
@@ -25,7 +25,7 @@
    by impersonating a contract (nobody signs) is packaged too, as is one where the vault withdraws to the
    owner and the owner calls the bridge, and one that bridges a wrapped token (burned) and a
    `bridgeMessage` carrying ETH, checking both kinds of balance in the manifest. Bridging a token
-   native to the chain is refused. `origin_SC_funds` (per output and the per-contract section) is checked in each, resolved per bridge call
+   native to the chain is refused. `origin_SC_funds` is checked in each, resolved per bridge call
    when two vaults lose ETH, and refused when no contract paid, when a contract is credited more
    than it lost, or when a bridge call's chain reaches none of several contracts.
 

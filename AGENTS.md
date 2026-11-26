@@ -79,9 +79,10 @@ plain and step-by-step.
 - `recovery-tx/` — `impersonate-and-move.template.sh` (annotated template), `run.sh` (runs a
   case's `move.sh` against the fork, inside a sandbox container), `build-recovery.sh` (builds
   `recovery.json` from tx hashes: one output per `BridgeEvent` of the zkEVM bridge, with
-  aggkit's bridgesync names for the event's fields, plus `origin_SC_funds` (balance diff over the
-  call traces and Transfer logs: the contract that lost that asset; with several, the first one up
-  the bridge call's call chain; refused if none, or if a contract is credited more than it lost);
+  aggkit's bridgesync names for the event's fields, plus a top-level `origin_SC_funds` section
+  (per output, the contract that paid, by balance diff over the call traces and Transfer logs: the
+  contract that lost that asset; with several, the first one up the bridge call's call chain;
+  refused if none, or if a contract is credited more than it lost; then summed per contract);
   refuses bridgeAsset to
   a network other than 0 and of a token native to the chain (origin network = the bridge's `networkID()`); `BRIDGE_ADDRESS` is a test-only override), `validate-recovery.sh` (offline check of a case's `recovery.json`; its schema
   lives there), `list-impersonated.sh` (derives senders from receipts and verifies a case's
@@ -98,9 +99,9 @@ plain and step-by-step.
   `prepare-submission.sh` generates it from `move.sh` — `{version: 1, outputs: [...]}`, each output
   `leaf_type` (`"Transfer"` bridgeAsset, `"Message"` bridgeMessage), `token_info` (`origin_network`, `origin_token_address`),
   `destination_network` (0 for bridgeAsset), `destination_address`, `amount` (string), `metadata`
-  (hex, not decoded), `origin_SC_funds` (null iff amount is "0"); no deposit count. A top-level
-  `origin_SC_funds` section sums the outputs per contract (`[{address, tokens: [{token_info,
-  amount}]}]`; a Message's ETH is token 0 / 0x0...0); the validator recomputes it from the outputs.
+  (hex, not decoded); no deposit count. A top-level `origin_SC_funds` section lists the contracts
+  that held the funds (`[{address, tokens: [{token_info, amount}]}]`; a Message's ETH is token
+  0 / 0x0...0); the validator checks that, per token, it totals the outputs.
 - `submission/` — `prepare-submission.sh` is the one script stakeholders run: it pre-checks the case
   (`move.sh` present and without template placeholders, `recovery.json` valid if present), runs
   `helpers/generate.sh`, packs its output with `helpers/package.sh` and prints where to send the
