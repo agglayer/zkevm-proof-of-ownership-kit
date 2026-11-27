@@ -73,6 +73,8 @@ zkevm-proof-of-ownership-kit/
 │   ├── prepare-submission.sh           # THE script to run: checks your case on a fresh fork,
 │   │                                     # builds the .tgz and tells you where to send it
 │   ├── verify-submission.sh            # verifies a .tgz (what Polygon runs; you can too before sending)
+│   ├── verify.sh                       # Polygon side: verify-submission.sh, then applies the case on
+│   │                                     # the latest archived state (recovery-verify.json, new state)
 │   ├── helpers/                        # called by prepare-submission.sh, no need to run them
 │   │   ├── generate.sh                 # runs a case on the fork, writes or checks recovery.json
 │   │   │                                 # and signatures.json fit together (writes manifest.json, run.log)
@@ -278,6 +280,32 @@ What Polygon runs on receiving a submission, and what you run in step 6 before s
 the `.tgz` safely, checks the file hashes in `manifest.json`, re-runs `move.sh` on a fresh fork
 (same sandbox), checks that it gives exactly `recovery.json`, derives the impersonated addresses, verifies
 every signature and compares all of it with `manifest.json`.
+
+### `submission/verify.sh <tgz>` (Polygon side)
+
+Runs `verify-submission.sh`, then applies the case on top of the recoveries already processed. It
+takes the run with the highest height in the archive (`STATE_URI`, default
+`gs://polygonlabs-zkevm-prod-let-archive/runs`, runs at `<STATE_URI>/<height>/`, the layout of
+aggkit's `exit_certificate` archive; `STATE_NETWORK_ID` adds a network folder in between) and its
+Anvil state dump (`STATE_FILE`, default `metadata/anvil-state.json`, which the exit tool stores
+among its metadata files; checked against the run's `archive-manifest.json`). It re-runs the case on a
+fork that loads that state (`move.sh` must still give exactly `recovery.json`) and writes, to
+`--out-dir` (default `verify-out/<case-id>`):
+
+- `recovery-verify.json` — `recovery.json` with the `deposit_count` of each output on that state,
+  plus `"metadata": {"case_hash": ...}` (the case hash the signatures cover);
+- `anvil-state-<id>.json` — the state after `move.sh`, for the next case once archived; `<id>` is
+  the first 8 bytes of the case hash (16 hex chars).
+
+The very first submission has no previous state: with an empty archive, pass
+`--no-previous-state` (refused if the archive already has runs). `--upload` stores the result as
+the next run (`<latest height + 1>`, 1 for the first) in the same layout — `<STATE_FILE>.zst` and
+`recovery-verify.json.zst` next to it, then `archive-manifest.json` last (with `case_id`,
+`case_hash`, `previous_run`) — write-once: an existing run is never overwritten. Without
+`--upload` nothing is uploaded.
+
+It needs `gcloud` (read access to the bucket; object create for `--upload`), `zstd`, `xxd`, `gzip`
+and `perl`. Exit codes as `verify-submission.sh`.
 
 ### Running the shadow-fork by hand (optional)
 

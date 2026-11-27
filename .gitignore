@@ -5,3 +5,4 @@
 cases/*/keystore/
 cases/*/env.sh
 cases/*/generated/
+verify-out/

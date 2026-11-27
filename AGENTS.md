@@ -121,7 +121,17 @@ plain and step-by-step.
   no `..`), checks the manifest sha256s, re-runs the case on a fresh fork through `helpers/generate.sh`
   (recovery.json, impersonated senders, signatures) and compares outputs, balances, nonce,
   fork block and senders with `manifest.json` (not tx hashes/gas). The packaged `move.sh`
-  runs in the sandbox (see the invariants). `SUBMIT.md` says what the stakeholder sends back to Polygon (the `.tgz`, plus the email) and what is in it.
+  runs in the sandbox (see the invariants). `verify.sh <tgz>` (Polygon side) runs `verify-submission.sh`,
+  then takes the highest-height run under `<STATE_URI>/[<STATE_NETWORK_ID>/]` (aggkit `exit_certificate`
+  archive layout: `runs/<10-digit height>/`, `<path>.zst` objects, `archive-manifest.json` with size/sha256;
+  `STATE_URI` gs:// via gcloud or a local dir), loads its Anvil dump (`STATE_FILE`, default
+  `metadata/anvil-state.json`; none with `--no-previous-state`, only for an empty archive) into the fork
+  (`setup/fork.sh` `LOAD_STATE`), re-runs the case with `generate.sh` (`STATE_OUT`,
+  `DEPOSIT_COUNTS_OUT` → `build-recovery.sh`) and writes `recovery-verify.json` (recovery.json +
+  per-output `deposit_count` + top-level `metadata.case_hash`) and the new `anvil-state-<first 8 bytes
+  of the case hash>.json`. `--upload` stores them as run `<latest + 1>` (manifest last, write-once:
+  gcloud `--if-generation-match=0`); without it nothing is uploaded. `generate.sh` prints how long
+  the fork took to come up. `SUBMIT.md` says what the stakeholder sends back to Polygon (the `.tgz`, plus the email) and what is in it.
 - `test/e2e/` — end-to-end test (geth `--dev` in Docker + `setup/fork.sh` + a whole case through
   `prepare-submission.sh`), run by `.github/workflows/e2e.yml`.
 
@@ -271,6 +281,6 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 |                                `fork.sh` behavior or output                                |                                                                           `README.md` (Running the shadow-fork), `submission/SUBMIT.md` fork-logs item                                                                           |
 |                       `recovery-tx/impersonate-and-move.template.sh`                       |                                                                                          `cases/_template/move.sh` (keep them in sync)                                                                                           |
 |            `recovery.json` fields (`validate-recovery.sh`, `build-recovery.sh`)            |                             `build-recovery.sh` and `validate-recovery.sh` (keep in sync), `cases/_template/README.md` step 2, `README.md`, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                             |
-| `submission/prepare-submission.sh` / `verify-submission.sh` / `helpers/*` checks or output |                                                      `submission/SUBMIT.md` (contents table), `cases/_template/README.md` step 5, `test/e2e/run.sh` steps 8-9, `AGENTS.md`                                                       |
+| `submission/prepare-submission.sh` / `verify-submission.sh` / `helpers/*` checks or output |                                                      `submission/SUBMIT.md` (contents table), `cases/_template/README.md` step 5, `test/e2e/run.sh` steps 8-10, `AGENTS.md`                                                       |
 |                              Files added/removed/implemented                               |                                                                                       `README.md` layout, `AGENTS.md` Repository Structure                                                                                       |
 |                                  What stakeholders submit                                  |                                                           `submission/SUBMIT.md`, `cases/_template/README.md` step 5, `submission/helpers/` (package layout, manifest)                                                           |
