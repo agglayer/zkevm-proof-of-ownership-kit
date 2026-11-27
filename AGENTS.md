@@ -86,7 +86,16 @@ plain and step-by-step.
   refuses bridgeAsset to
   a network other than 0 and of a token native to the chain (origin network = the bridge's `networkID()`); `BRIDGE_ADDRESS` is a test-only override), `validate-recovery.sh` (offline check of a case's `recovery.json`; its schema
   lives there), `list-impersonated.sh` (derives senders from receipts and verifies a case's
-  `signatures.json`).
+  `signatures.json`), `certificate-to-move.sh` (Polygon side, not part of a
+  submission: from an agglayer exit certificate of aggkit's `exit_certificate` tool, writes the
+  `move.sh` that replays its bridge exits in order, one per block, so the fork ends at the state after
+  the certificate; the generated script checks each exit's deposit count and the final `getRoot()`
+  against `new_local_exit_root`. Senders: a `Transfer`'s `dest_address`, a `Message`'s
+  `token_info.origin_token_address`, with their own funds; `--fund <address>` makes the impersonated
+  bridge give that sender each exit's amount first (ETH transfer or wrapped-token mint — transactions,
+  not cheat codes, so it runs in the sandbox); `--metadata` gives the Messages' raw metadata, checked
+  against the certificate's hash. Every certificate field is pattern-checked before it is written
+  into the script).
 - `ownership-proof/` — `message-template.txt` (the fixed proof message, bound to the case by the
   case hash), `case-hash.sh` (the case hash: sha256 of the sha256 lines of
   `recovery.json` and `move.sh`), `sign-message.sh` (EIP-191 signing via hardware wallet / keystore /
@@ -132,8 +141,10 @@ plain and step-by-step.
   of the case hash>.json`. `--upload` stores them as run `<latest + 1>` (manifest last, write-once:
   gcloud `--if-generation-match=0`); without it nothing is uploaded. `generate.sh` prints how long
   the fork took to come up. `SUBMIT.md` says what the stakeholder sends back to Polygon (the `.tgz`, plus the email) and what is in it.
-- `test/e2e/` — end-to-end test (geth `--dev` in Docker + `setup/fork.sh` + a whole case through
-  `prepare-submission.sh`), run by `.github/workflows/e2e.yml`.
+- `test/e2e/` — end-to-end tests, run by `.github/workflows/e2e.yml`: `run.sh` (geth `--dev` in
+  Docker + `setup/fork.sh` + a whole case through `prepare-submission.sh`) and
+  `certificate-to-move.sh` (anvil in Docker + `MockBridge.sol` + `setup/fork.sh`: a small certificate
+  through `recovery-tx/certificate-to-move.sh` and `recovery-tx/run.sh`).
 
 Fork-state verification lives inside `setup/fork.sh` (it refuses to start unless the RPC's
 latest block is the halt block); there is no separate verifier for it.
@@ -235,7 +246,9 @@ ADDRESS=0x... NONCE=<nonce> ./ownership-proof/sign-message.sh cases/<case-id>/si
 ## Testing
 
 `test/e2e/run.sh` is an end-to-end test (needs Docker, `cast`, `forge`) that CI runs on every PR
-(`.github/workflows/e2e.yml`); run it after touching any script. Besides it, verify changes with:
+(`.github/workflows/e2e.yml`); run it after touching any script. `test/e2e/certificate-to-move.sh`
+is the one of `recovery-tx/certificate-to-move.sh` (same needs, same workflow); run it after touching
+that script, `recovery-tx/run.sh`, the sandbox or `setup/fork.sh`. Besides them, verify changes with:
 
 ```bash
 shellcheck $(git ls-files '*.sh')
@@ -282,5 +295,6 @@ export RPC_URL=http://127.0.0.1:8611 ETH_RPC_URL=http://127.0.0.1:8611
 |                       `recovery-tx/impersonate-and-move.template.sh`                       |                                                                                          `cases/_template/move.sh` (keep them in sync)                                                                                           |
 |            `recovery.json` fields (`validate-recovery.sh`, `build-recovery.sh`)            |                             `build-recovery.sh` and `validate-recovery.sh` (keep in sync), `cases/_template/README.md` step 2, `README.md`, `submission/SUBMIT.md`, `AGENTS.md` Repository Structure                             |
 | `submission/prepare-submission.sh` / `verify-submission.sh` / `helpers/*` checks or output |                                                      `submission/SUBMIT.md` (contents table), `cases/_template/README.md` step 5, `test/e2e/run.sh` steps 8-10, `AGENTS.md`                                                       |
+|                 `recovery-tx/certificate-to-move.sh` options or generated script                 |                                                   `README.md` (appendix section), `test/e2e/certificate-to-move.sh`, `test/e2e/README.md`, `AGENTS.md` Repository Structure                                                    |
 |                              Files added/removed/implemented                               |                                                                                       `README.md` layout, `AGENTS.md` Repository Structure                                                                                       |
 |                                  What stakeholders submit                                  |                                                           `submission/SUBMIT.md`, `cases/_template/README.md` step 5, `submission/helpers/` (package layout, manifest)                                                           |

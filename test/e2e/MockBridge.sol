@@ -42,9 +42,11 @@ contract MockERC20 {
 }
 
 // Stand-in for the zkEVM bridge (PolygonZkEVMBridgeV2) on the test chain: same bridgeAsset /
-// bridgeMessage / networkID / getTokenWrappedAddress signatures and the same BridgeEvent. Network id
+// bridgeMessage / networkID / getTokenWrappedAddress / depositCount / getRoot signatures, the same
+// BridgeEvent and the same exit tree (leaf value and incremental Merkle tree of depth 32). Network id
 // 1, as zkEVM. ETH stays in the bridge, tokens of this network are locked in it, wrapped tokens are
-// burned — as the real bridge does.
+// burned — as the real bridge does. Unlike the real bridge, an asset's leaf metadata is empty (the
+// real one encodes the token's name, symbol and decimals).
 contract MockBridge {
     event BridgeEvent(
         uint8 leafType,
@@ -59,6 +61,7 @@ contract MockBridge {
 
     uint32 public constant networkID = 1;
     uint32 public depositCount;
+    bytes32[32] internal branch;
 
     struct Origin {
         uint32 network;
@@ -67,6 +70,9 @@ contract MockBridge {
 
     mapping(address => Origin) public wrappedToOrigin;
     mapping(bytes32 => address) internal originToWrapped;
+
+    // The real bridge of zkEVM holds the network's ETH reserve; the test funds the mock the same way.
+    receive() external payable {}
 
     // Test setup: registers <wrapped> as the wrapped token of (<originNetwork>, <originAddress>).
     function setWrapped(uint32 originNetwork, address originAddress, address wrapped) external {
@@ -97,16 +103,52 @@ contract MockBridge {
                 (originNetwork, originAddress) = (networkID, token);
             }
         }
-        emit BridgeEvent(0, originNetwork, originAddress, destinationNetwork, destinationAddress, amount, "", depositCount++);
+        _bridge(0, originNetwork, originAddress, destinationNetwork, destinationAddress, amount, "");
     }
 
     function bridgeMessage(uint32 destinationNetwork, address destinationAddress, bool, bytes calldata metadata) external payable {
-        emit BridgeEvent(1, networkID, msg.sender, destinationNetwork, destinationAddress, msg.value, metadata, depositCount++);
+        _bridge(1, networkID, msg.sender, destinationNetwork, destinationAddress, msg.value, metadata);
     }
 
     // NOT in the real bridge: emits an ETH BridgeEvent without taking any ETH, so the e2e can check
     // that the balance check catches events the bridge did not back with funds.
     function fakeBridgeEvent(address destinationAddress, uint256 amount) external {
-        emit BridgeEvent(0, 0, address(0), 0, destinationAddress, amount, "", depositCount++);
+        _bridge(0, 0, address(0), 0, destinationAddress, amount, "");
+    }
+
+    function _bridge(
+        uint8 leafType,
+        uint32 originNetwork,
+        address originAddress,
+        uint32 destinationNetwork,
+        address destinationAddress,
+        uint256 amount,
+        bytes memory metadata
+    ) internal {
+        emit BridgeEvent(leafType, originNetwork, originAddress, destinationNetwork, destinationAddress, amount, metadata, depositCount);
+        bytes32 node = keccak256(
+            abi.encodePacked(leafType, originNetwork, originAddress, destinationNetwork, destinationAddress, amount, keccak256(metadata))
+        );
+        uint256 size = ++depositCount;
+        for (uint256 height = 0; height < 32; height++) {
+            if (((size >> height) & 1) == 1) {
+                branch[height] = node;
+                return;
+            }
+            node = keccak256(abi.encodePacked(branch[height], node));
+        }
+    }
+
+    function getRoot() external view returns (bytes32 node) {
+        uint256 size = depositCount;
+        bytes32 zero;
+        for (uint256 height = 0; height < 32; height++) {
+            if (((size >> height) & 1) == 1) {
+                node = keccak256(abi.encodePacked(branch[height], node));
+            } else {
+                node = keccak256(abi.encodePacked(node, zero));
+            }
+            zero = keccak256(abi.encodePacked(zero, zero));
+        }
     }
 }

@@ -26,6 +26,9 @@ jobs:
       - name: Run e2e
         run: test/e2e/run.sh
 
+      - name: Run certificate-to-move e2e
+        run: test/e2e/certificate-to-move.sh
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
