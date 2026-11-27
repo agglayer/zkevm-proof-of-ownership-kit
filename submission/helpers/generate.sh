@@ -56,6 +56,10 @@
 #              empty (default: generated). Once it has entries, their nonce is used.
 #   BRIDGE_ADDRESS  TESTING ONLY (needs --allow-test-fork): another bridge contract than the
 #              zkEVM bridge (see recovery-tx/build-recovery.sh)
+#   Polygon side (submission/verify.sh sets them; submitters do not):
+#   LOAD_STATE          an Anvil state dump the fork starts from (setup/fork.sh)
+#   STATE_OUT           once every check passed, write the fork's state (Anvil dump, JSON) here
+#   DEPOSIT_COUNTS_OUT  write the deposit count of each output here (recovery-tx/build-recovery.sh)
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -118,7 +122,8 @@ if [ -z "${case_arg}" ]; then
 fi
 
 missing_tools=""
-for bin in cast jq curl bc; do
+[ -z "${STATE_OUT:-}" ] || missing_tools_extra="xxd gzip"
+for bin in cast jq curl bc ${missing_tools_extra:-}; do
     command -v "${bin}" >/dev/null 2>&1 || missing_tools="${missing_tools} ${bin}"
 done
 if command -v sha256sum >/dev/null 2>&1; then
@@ -442,6 +447,21 @@ fi
 # then every sender is a contract.)
 if [ "$(jq 'length' "${signatures_path}")" != "0" ] || [ -n "${required}" ]; then
     "${repo_root}/ownership-proof/verify-signature.sh" "${signatures_path}" || die "signatures.json has invalid entries — see above. If recovery.json or move.sh changed after signing, every signature must be made again (they are bound to those exact files)."
+fi
+
+# --- State after move.sh (Polygon side) ---------------------------------------------------------
+
+if [ -n "${STATE_OUT:-}" ]; then
+    # anvil_dumpState returns the state as hex bytes, gzip-compressed (plain JSON on some versions).
+    dump_hex="$(cast rpc anvil_dumpState --rpc-url "${RPC_URL}" | jq -r .)" || die "could not dump the fork's state (anvil_dumpState)."
+    [[ "${dump_hex}" =~ ^0x([0-9a-fA-F]{2})+$ ]] || die "unexpected anvil_dumpState result."
+    if [[ "${dump_hex}" == 0x1f8b* ]]; then
+        printf '%s' "${dump_hex#0x}" | xxd -r -p | gzip -dc >"${STATE_OUT}"
+    else
+        printf '%s' "${dump_hex#0x}" | xxd -r -p >"${STATE_OUT}"
+    fi
+    jq -e 'type == "object" and has("accounts")' "${STATE_OUT}" >/dev/null || die "the dumped state (${STATE_OUT}) is not an Anvil state."
+    echo "Wrote the fork's state after move.sh to ${STATE_OUT}"
 fi
 
 # --- 6. Write the files --------------------------------------------------------------------------

@@ -33,6 +33,13 @@
    re-runs `move.sh`, checks that it gives `recovery.json`, the impersonated addresses and the signatures, and compares
    them with `manifest.json`.
 
+10. runs `submission/verify.sh` with `STATE_URI` pointing at a local archive of two runs (the plain
+    fork, and the fork after two more deposits) in the `exit_certificate` layout (`zstd` objects,
+    `archive-manifest.json`): it must pick the latest run, write `recovery-verify.json` (the packaged
+    `recovery.json` with deposit counts moved by 2 and the case hash) and an `anvil-state-<first 8 bytes of the case hash>.json` that loads
+    back with the deposits and funds of `move.sh`. An incomplete latest run (no manifest) and a dump that
+    differs from its manifest are refused.
+
 Negative cases: non-owner `execute` reverts; missing owner signature makes `list-impersonated.sh`
 fail; `sign-message.sh` rejects `--private-key`; a forged signature does not verify; `prepare-submission.sh`
 refuses a non-standard fork (another `L2_RPC_URL`, `FORK_BLOCK`) without `--allow-test-fork`, a `recovery.json` that
@@ -67,4 +74,4 @@ and `geth.log` as an artifact if it fails.
 
 New steps go before the final `E2E PASSED`. Variables available there: `PKG` (the `.tgz`), `PKG_DIR`
 (unpacked), `CASE_DIR`, `SIGS`, `VAULT`, `BRIDGE`, `OWNER`, `DEST`, `RPC_URL`, `WORKDIR`; helpers `step`, `fail`,
-`expect_fail`, `bridge_calls` / `write_move` (a `move.sh`), `pkg` (prepare-submission.sh) and `verify` (verify-submission.sh).
+`expect_fail`, `bridge_calls` / `write_move` (a `move.sh`), `pkg` (prepare-submission.sh), `verify` (verify-submission.sh), and `start_test_fork` / `stop_test_fork` / `vfy` (verify.sh).

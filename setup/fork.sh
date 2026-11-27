@@ -26,6 +26,9 @@
 #                L2_RPC_URL at a test node whose head is that block. A non-default value
 #                is flagged with a warning in the output, so it is visible in fork.log.
 #                (see L2_RPC_URL; the log of a test fork may contain your RPC URL: do not send it).
+#   LOAD_STATE   Polygon side (submission/verify.sh): an Anvil state dump (JSON, as written by
+#                anvil --dump-state / anvil_dumpState) loaded on top of the fork, e.g. the state
+#                after the recoveries already processed. Submitters do not set it.
 set -euo pipefail
 
 L2_RPC_URL="${L2_RPC_URL:-https://zkevm-rpc.com/}"
@@ -59,6 +62,15 @@ if ! docker info >/dev/null 2>&1; then
     echo "Error: docker is installed but its daemon is not reachable." >&2
     echo "Start Docker (e.g. open Docker Desktop) and check that your user may run 'docker'." >&2
     exit 1
+fi
+load_args=()
+if [ -n "${LOAD_STATE:-}" ]; then
+    if [ ! -f "${LOAD_STATE}" ]; then
+        echo "Error: LOAD_STATE ${LOAD_STATE} not found." >&2
+        exit 1
+    fi
+    LOAD_STATE="$(cd "$(dirname "${LOAD_STATE}")" && pwd)/$(basename "${LOAD_STATE}")"
+    load_args=(--load-state /anvil-state/state.json)
 fi
 if ! command -v cast >/dev/null 2>&1; then
     echo "Warning: 'cast' not found. It is not needed to start the fork, but the next steps are (install the Foundry toolchain from https://getfoundry.sh)." >&2
@@ -102,6 +114,11 @@ fi
 
 echo "fork_block matches the network's latest block: ${fork_block}"
 echo "Starting Anvil shadow-fork (${ANVIL_IMAGE}) on http://127.0.0.1:${ANVIL_PORT} ..."
+mount_args=()
+if [ -n "${LOAD_STATE:-}" ]; then
+    echo "Loading the Anvil state ${LOAD_STATE} on top of the fork"
+    mount_args=(-v "${LOAD_STATE}:/anvil-state/state.json:ro")
+fi
 
 # Batch mining via --block-time (auto-mine would produce one block per tx), no block gas
 # cap so a single block can hold every pending tx, auto-impersonate so any account can
@@ -121,6 +138,7 @@ exec docker run --rm --init \
     --name "zkevm-shadow-fork-${ANVIL_PORT}" \
     --add-host host.docker.internal:host-gateway \
     -p "127.0.0.1:${ANVIL_PORT}:8545" \
+    ${mount_args[@]+"${mount_args[@]}"} \
     --entrypoint anvil \
     "${ANVIL_IMAGE}" \
     --host 0.0.0.0 \
@@ -136,4 +154,5 @@ exec docker run --rm --init \
     --retries 10 \
     --fork-retry-backoff 1000 \
     --timeout 120000 \
-    --no-rate-limit
+    --no-rate-limit \
+    ${load_args[@]+"${load_args[@]}"}

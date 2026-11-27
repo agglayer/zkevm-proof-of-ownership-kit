@@ -73,6 +73,8 @@ zkevm-proof-of-ownership-kit/
 │   ├── prepare-submission.sh           # THE script to run: checks your case on a fresh fork,
 │   │                                     # builds the .tgz and tells you where to send it
 │   ├── verify-submission.sh            # verifies a .tgz (what Polygon runs; you can too before sending)
+│   ├── verify.sh                       # Polygon side: verify-submission.sh, then applies the case on
+│   │                                     # the latest archived state (recovery-verify.json, new state)
 │   ├── helpers/                        # called by prepare-submission.sh, no need to run them
 │   │   ├── generate.sh                 # runs a case on the fork, writes or checks recovery.json
 │   │   │                                 # and signatures.json fit together (writes manifest.json, run.log)
@@ -278,6 +280,24 @@ What Polygon runs on receiving a submission, and what you run in step 6 before s
 the `.tgz` safely, checks the file hashes in `manifest.json`, re-runs `move.sh` on a fresh fork
 (same sandbox), checks that it gives exactly `recovery.json`, derives the impersonated addresses, verifies
 every signature and compares all of it with `manifest.json`.
+
+### `submission/verify.sh <tgz>` (Polygon side)
+
+Runs `verify-submission.sh`, then applies the case on top of the recoveries already processed. It
+takes the run with the highest height in the archive (`STATE_URI`, default
+`gs://polygonlabs-zkevm-prod-let-archive/runs`, folder `<STATE_NETWORK_ID>/<height>`, the layout of
+aggkit's `exit_certificate` archive) and its Anvil state dump (`STATE_FILE`, default
+`anvil-state.json`, checked against the run's `archive-manifest.json`). It re-runs the case on a
+fork that loads that state (`move.sh` must still give exactly `recovery.json`) and writes, to
+`--out-dir` (default `verify-out/<case-id>`):
+
+- `recovery-verify.json` — `recovery.json` with the `deposit_count` of each output on that state,
+  plus `"metadata": {"case_hash": ...}` (the case hash the signatures cover);
+- `anvil-state-<id>.json` — the state after `move.sh`, for the next case once archived (nothing is
+  uploaded); `<id>` is the first 8 bytes of the case hash (16 hex chars).
+
+It needs `gcloud` with read access to the bucket, `zstd`, `xxd` and `gzip`. Exit codes as
+`verify-submission.sh`.
 
 ### Running the shadow-fork by hand (optional)
 

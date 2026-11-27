@@ -9,7 +9,7 @@
 # ownership-proof/sign-message.sh -> check with list-impersonated.sh / verify-signature.sh.
 # Negative cases are checked too. Nothing is left in the repo; everything is cleaned up on exit.
 #
-# Requires: docker (daemon running), cast, forge (Foundry), curl, jq.
+# Requires: docker (daemon running), cast, forge (Foundry), curl, jq, zstd, xxd, gzip.
 #
 # Usage (from anywhere): test/e2e/run.sh
 #
@@ -35,7 +35,7 @@ ANVIL_PORT="${ANVIL_PORT:-18546}"
 E2E_KEEP="${E2E_KEEP:-0}"
 
 missing=""
-for bin in docker cast forge curl jq; do
+for bin in docker cast forge curl jq zstd xxd gzip; do
     command -v "$bin" >/dev/null 2>&1 || missing="${missing} ${bin}"
 done
 if [ -n "${missing}" ]; then
@@ -746,6 +746,95 @@ set -e
 grep -q "MANUAL REVIEW REQUIRED" "${WORKDIR}/verify-ctrl.out" || fail "expected MANUAL REVIEW REQUIRED"
 if grep -q "^VERIFIED:" "${WORKDIR}/verify-ctrl.out"; then fail "a contract sender must not give a plain VERIFIED"; fi
 echo "  contract sender: automatic checks pass, manual review required (exit 3)"
+
+# ---------------------------------------------------------------- 10. verify.sh
+step "10. submission/verify.sh: apply the package on the latest archived state"
+# A local archive with the layout of aggkit's exit_certificate one: <base>/<network>/<height>/
+# with archive-manifest.json and the state dump stored zstd-compressed. Run 1 is the plain fork,
+# run 2 (the latest) the fork after two more deposits, so the deposit counts move by 2.
+ARCHIVE="${WORKDIR}/archive"
+start_test_fork() { # [env...]: a fork of the geth chain on ANVIL_PORT, in the background
+    env "$@" L2_RPC_URL="${GETH_URL}" ANVIL_PORT="${ANVIL_PORT}" FORK_BLOCK="${STABLE_BLOCK}" BLOCK_TIME=1 \
+        FORK_LOG="${WORKDIR}/fork-archive.log" "${repo_root}/setup/fork.sh" >/dev/null 2>&1 &
+    fork_pid=$!
+    wait_rpc "${RPC_URL}" 120 || { tail -n 30 "${WORKDIR}/fork-archive.log" >&2; fail "test fork did not come up"; }
+}
+stop_test_fork() {
+    docker rm -f "${ANVIL_NAME}" >/dev/null 2>&1 || true
+    wait "${fork_pid}" 2>/dev/null || true
+    fork_pid=""
+}
+archive_run() { # <height>: dump the running fork into ${ARCHIVE}/1/<height>/
+    local dir hex
+    dir="${ARCHIVE}/1/$(printf '%010d' "$1")"
+    mkdir -p "${dir}"
+    hex="$(cast rpc anvil_dumpState --rpc-url "${RPC_URL}" | jq -r .)"
+    printf '%s' "${hex#0x}" | xxd -r -p | gzip -dc >"${WORKDIR}/state.json"
+    zstd -q -f "${WORKDIR}/state.json" -o "${dir}/anvil-state.json.zst"
+    jq -n --arg sha "$(sha256_file "${WORKDIR}/state.json")" --argjson size "$(wc -c <"${WORKDIR}/state.json" | tr -d ' ')" \
+        --argjson osize "$(wc -c <"${dir}/anvil-state.json.zst" | tr -d ' ')" \
+        '{version: 1, compression: "zstd", files: [{path: "anvil-state.json", size: $size, sha256: $sha,
+          object: "anvil-state.json.zst", objectSize: $osize, objectCrc32c: 0}]}' >"${dir}/archive-manifest.json"
+}
+sha256_file() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'; }
+deposit_count() { cast call "${BRIDGE}" "depositCount()(uint32)" --rpc-url "${RPC_URL}"; }
+start_test_fork
+D0="$(deposit_count)"
+archive_run 1
+for _ in 1 2; do
+    cast send --unlocked --from "${ATTACKER}" "${BRIDGE}" "bridgeMessage(uint32,address,bool,bytes)" 7 "${DEST}" false 0x \
+        --rpc-url "${RPC_URL}" >/dev/null
+done
+[ "$(deposit_count)" = "$((D0 + 2))" ] || fail "the extra deposits did not land on the archive fork"
+archive_run 2
+mkdir -p "${ARCHIVE}/1/notes"   # not a height: ignored
+stop_test_fork
+
+vfy() { # <tgz> <out dir> [extra args]
+    local f="$1" o="$2"
+    shift 2
+    STATE_URI="${ARCHIVE}" fork_env "${repo_root}/submission/verify.sh" "${f}" --out-dir "${o}" "$@" </dev/null
+}
+vfy "${PKG}" "${WORKDIR}/vfy" --allow-test-fork >"${WORKDIR}/vfy.out" 2>&1 \
+    || { cat "${WORKDIR}/vfy.out" >&2; fail "verify.sh failed on a good package"; }
+grep -q "^VERIFIED AND APPLIED ON THE LATEST STATE (height 2)" "${WORKDIR}/vfy.out" || { cat "${WORKDIR}/vfy.out" >&2; fail "expected the latest run (height 2)"; }
+jq -e --slurpfile r "${CASE_DIR}/recovery.json" --arg h "$("${repo_root}/ownership-proof/case-hash.sh" "${CASE_DIR}")" \
+    --argjson d0 "$((D0 + 2))" '
+    (keys_unsorted == ["version", "metadata", "outputs", "origin_SC_funds"])
+    and .metadata == {case_hash: $h}
+    and [.outputs[].deposit_count] == [$d0, $d0 + 1]
+    and (del(.metadata) | .outputs |= map(del(.deposit_count))) == $r[0]' "${WORKDIR}/vfy/recovery-verify.json" >/dev/null \
+    || { cat "${WORKDIR}/vfy/recovery-verify.json" >&2; fail "unexpected recovery-verify.json"; }
+echo "  recovery-verify.json: recovery.json + deposit counts on the latest state + case hash"
+NEW_STATE="${WORKDIR}/vfy/anvil-state-$("${repo_root}/ownership-proof/case-hash.sh" "${CASE_DIR}" | cut -c1-16).json"
+[ -f "${NEW_STATE}" ] || { ls "${WORKDIR}/vfy" >&2; fail "expected ${NEW_STATE##*/} (first 8 bytes of the case hash)"; }
+# The new state is the latest one plus move.sh: the bridge has the two outputs on top.
+start_test_fork LOAD_STATE="${NEW_STATE}"
+[ "$(deposit_count)" = "$((D0 + 4))" ] || fail "the new anvil-state.json does not hold the deposits of move.sh"
+[ "$(balance_wei "${BRIDGE}" "${RPC_URL}")" = "${ASSET_WEI}" ] || fail "the new anvil-state.json does not hold the bridged ETH"
+stop_test_fork
+echo "  ${NEW_STATE##*/} loads back with the deposits and funds of move.sh"
+# Negative: a newer run without archive-manifest.json (incomplete), then a dump that does not
+# match its manifest.
+mkdir -p "${ARCHIVE}/1/0000000003"
+expect_fail "verify.sh refuses an incomplete latest run" vfy "${PKG}" "${WORKDIR}/vfy-neg" --allow-test-fork
+grep -q "the run is incomplete" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the incomplete-run message"; }
+cp "${ARCHIVE}/1/0000000002/archive-manifest.json" "${ARCHIVE}/1/0000000003/"
+cp "${ARCHIVE}/1/0000000001/anvil-state.json.zst" "${ARCHIVE}/1/0000000003/"
+expect_fail "verify.sh refuses a state dump that differs from its manifest" vfy "${PKG}" "${WORKDIR}/vfy-neg" --allow-test-fork
+grep -q "differs from archive-manifest.json" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the manifest mismatch message"; }
+# Chained: archive the state verify.sh wrote as run 3, then the next case (the token package)
+# starts from it: its deposit counts follow the main case's.
+rm -rf "${ARCHIVE}/1/0000000003"
+start_test_fork LOAD_STATE="${NEW_STATE}"
+archive_run 3
+stop_test_fork
+vfy "${PKG_TOKENS}" "${WORKDIR}/vfy-tokens" --allow-test-fork >"${WORKDIR}/vfy-tokens.out" 2>&1 \
+    || { cat "${WORKDIR}/vfy-tokens.out" >&2; fail "verify.sh failed on the token package after the main case"; }
+grep -q "^VERIFIED AND APPLIED ON THE LATEST STATE (height 3)" "${WORKDIR}/vfy-tokens.out" || { cat "${WORKDIR}/vfy-tokens.out" >&2; fail "expected run 3"; }
+jq -e --argjson d "$((D0 + 4))" '[.outputs[].deposit_count] == [$d, $d + 1]' "${WORKDIR}/vfy-tokens/recovery-verify.json" >/dev/null \
+    || { cat "${WORKDIR}/vfy-tokens/recovery-verify.json" >&2; fail "unexpected deposit counts for the chained case"; }
+echo "  chained: the next case starts from the archived state (deposit counts $((D0 + 4)), $((D0 + 5)))"
 
 # Negative: a file changed after packaging (hash mismatch), a manifest that lies about the
 # nonce (hashes fine), and a path-traversal entry.

@@ -40,6 +40,9 @@
 #   RPC_URL         the fork (default http://127.0.0.1:8545)
 #   BRIDGE_ADDRESS  TESTING ONLY: the bridge contract (default: the zkEVM bridge,
 #                   0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe)
+#   DEPOSIT_COUNTS_OUT  also write, to this file, the deposit count of each output (a JSON list in
+#                   the order of the outputs). They are not in recovery.json: they depend on the
+#                   state the fork starts from (submission/verify.sh uses them).
 set -euo pipefail
 
 RPC_URL="${RPC_URL:-http://127.0.0.1:8545}"
@@ -145,7 +148,8 @@ for tx in "$@"; do
         destination_address="$(sed -n 5p <<<"${fields}")"
         amount="$(sed -n 6p <<<"${fields}")"
         metadata="$(sed -n 7p <<<"${fields}")"
-        for v in "${leaf_type}" "${origin_network}" "${destination_network}" "${amount}"; do
+        deposit_count="$(sed -n 8p <<<"${fields}")"
+        for v in "${leaf_type}" "${origin_network}" "${destination_network}" "${amount}" "${deposit_count}"; do
             [[ "${v}" =~ ^[0-9]+$ ]] || die "unexpected value in a BridgeEvent of ${tx}: ${v}"
         done
         for v in "${origin_address}" "${destination_address}"; do
@@ -183,10 +187,10 @@ for tx in "$@"; do
         jq -n -c --arg lt "${label}" \
             --argjson on "${origin_network}" --arg oa "$(cast to-check-sum-address "${origin_address}")" \
             --argjson dn "${destination_network}" --arg da "$(cast to-check-sum-address "${destination_address}")" \
-            --arg amount "${amount}" --arg md "${metadata}" --arg asset "${asset}" --argjson chain "${chain}" --arg tx "${tx}" \
+            --arg amount "${amount}" --arg md "${metadata}" --arg asset "${asset}" --argjson chain "${chain}" --arg tx "${tx}" --argjson dc "${deposit_count}" \
             '{leaf_type: $lt, token_info: {origin_network: $on, origin_token_address: $oa}, destination_network: $dn,
               destination_address: $da, amount: $amount, metadata: $md,
-              _asset: (if $asset == "" then null else $asset end), _chain: $chain, _tx: $tx}' >>"${work}/outputs.jsonl"
+              _asset: (if $asset == "" then null else $asset end), _chain: $chain, _tx: $tx, _dc: $dc}' >>"${work}/outputs.jsonl"
     done <<<"${receipt_data}"
 done
 
@@ -264,12 +268,16 @@ jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value
 jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {key: (.[0] + "|" + .[1]), value: .[2]}) | from_entries' \
     "${work}/sums.tsv" >"${work}/sums.json"
 
+if [ -n "${DEPOSIT_COUNTS_OUT:-}" ]; then
+    jq -c -s 'map(._dc)' "${work}/resolved.jsonl" >"${DEPOSIT_COUNTS_OUT}"
+fi
+
 # shellcheck disable=SC2016  # a jq program
 jq -s --slurpfile cs "${work}/checksum.json" --slurpfile sums "${work}/sums.json" '
     def uniq: reduce .[] as $v ([]; if any(.[]; . == $v) then . else . + [$v] end);
     map(select(._asset != null)) as $funded
     | {version: 1,
-       outputs: map(del(._asset, ._chain, ._tx, .origin_SC_funds)),
+       outputs: map(del(._asset, ._chain, ._tx, ._dc, .origin_SC_funds)),
        origin_SC_funds: [$funded | map(.origin_SC_funds) | uniq | .[] as $o
          | {address: $cs[0][$o],
             tokens: [$funded | map(select(.origin_SC_funds == $o) | ._asset) | uniq | .[] as $a
