@@ -55,6 +55,31 @@ a file changed after packaging, a manifest that differs from a fresh run (nonce,
 Everything (containers, temp dirs, fork process) is removed on exit, also on failure. Nothing is
 written to the repo.
 
+## `certificate-to-move.sh`
+
+`test/e2e/certificate-to-move.sh` tests `recovery-tx/certificate-to-move.sh` on its own throwaway
+chain (anvil in Docker) with `MockBridge.sol`, a stand-in for the zkEVM bridge with the same exit
+tree:
+
+1. deploys the mock bridge, a wrapped token and a token of the L2 itself, funds the holders and makes
+   one bridge (so the certificate's exits start at the deposit count 1);
+2. writes a certificate with 7 exits — ETH, the wrapped token, the L2 token, a `Message` with ETH and
+   one without, and an ETH and a wrapped-token exit of an address that holds nothing (`--fund`) — and
+   computes the expected exit root itself, from the certificate's fields;
+3. generates `move.sh` (twice, with the raw metadata in the two accepted formats: same output) and
+   replays it with `recovery-tx/run.sh` on a fork: deposit counts 1..7, `getRoot()` equal to the
+   expected root, the holders' balances spent, the funded address back to nothing, the senders as
+   `list-impersonated.sh` sees them;
+4. dumps the fork's state (`anvil_dumpState`) and starts a fork that loads it (`LOAD_STATE`, as
+   `submission/verify.sh` does): it starts with the 8 deposits and the same exit root.
+
+Negative cases: a `Message` without its raw metadata, a metadata that does not hash to the
+certificate's value or is not aligned, `--fund` for a token of the L2, a field with shell code in it;
+on the fork, an exit whose sender does not hold the funds (no `--fund`), a certificate with another
+`new_local_exit_root`, and a second replay on the same fork.
+
+Optional env: `ANVIL_IMAGE`, `CHAIN_PORT` (18555), `ANVIL_PORT` (18556), `E2E_WORKDIR`, `E2E_KEEP`.
+
 ## Run locally
 
 Linux only for now: the script uses GNU `tar --transform` and `sha256sum` (macOS needs `gtar` and `coreutils`).
@@ -63,6 +88,7 @@ Needs `docker` (daemon running), Foundry (`cast`, `forge`), `curl`, `jq`. From t
 
 ```bash
 test/e2e/run.sh
+test/e2e/certificate-to-move.sh
 ```
 
 Optional env: `GETH_IMAGE`, `GETH_PORT` (18545), `ANVIL_PORT` (18546), `E2E_WORKDIR` +
@@ -70,7 +96,7 @@ Optional env: `GETH_IMAGE`, `GETH_PORT` (18545), `ANVIL_PORT` (18546), `E2E_WORK
 
 ## CI
 
-`.github/workflows/e2e.yml` runs it on pull requests and pushes to `main`, and uploads `fork.log`
+`.github/workflows/e2e.yml` runs both on pull requests and pushes to `main`, and uploads `fork.log`
 and `geth.log` as an artifact if it fails.
 
 ## Extending

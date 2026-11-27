@@ -53,8 +53,10 @@ zkevm-proof-of-ownership-kit/
 │   ├── run.sh                          # runs a case's move.sh against the fork, in a sandbox container
 │   ├── build-recovery.sh               # builds recovery.json from the BridgeEvents of tx hashes
 │   ├── validate-recovery.sh            # checks a case's recovery.json (offline, jq only)
-│   └── list-impersonated.sh            # derives impersonated addresses from tx receipts,
-│                                          # cross-checks them against a case's signatures.json
+│   ├── list-impersonated.sh            # derives impersonated addresses from tx receipts,
+│   │                                      # cross-checks them against a case's signatures.json
+│   └── certificate-to-move.sh          # (Polygon side) writes the move.sh that replays the bridge
+│                                          # exits of an agglayer certificate on the fork
 ├── ownership-proof/
 │   ├── message-template.txt            # fixed message format, for consistent signatures
 │   ├── case-hash.sh                    # hash of recovery.json + move.sh that goes into the message
@@ -80,7 +82,7 @@ zkevm-proof-of-ownership-kit/
 │   │   │                                 # and signatures.json fit together (writes manifest.json, run.log)
 │   │   └── package.sh                  # packs generate.sh's output into the .tgz
 │   └── SUBMIT.md                       # what to submit (the .tgz) and what is in it
-└── test/e2e/                           # end-to-end test (geth + fork + a case), run in CI
+└── test/e2e/                           # end-to-end tests (a chain + fork + a case / a certificate), run in CI
 ```
 
 ## Who needs a signature
@@ -334,6 +336,48 @@ copy the console by hand. A submission must use the official RPC, `https://zkevm
 unset): `prepare-submission.sh` and `verify-submission.sh` refuse another `L2_RPC_URL` or a `FORK_BLOCK`
 unless you pass `--allow-test-fork`, and a package made that way is not valid for a real submission (and
 its log, which is not masked, may contain your RPC URL).
+
+### `recovery-tx/certificate-to-move.sh` (Polygon side)
+
+You don't need this to submit. Polygon uses it to bring a fork to the state after an agglayer
+certificate (those written by aggkit's `exit_certificate` tool: `exit-certificate-signed.json` /
+`exit-certificate-full.json`), so that the bridges of a case's `move.sh` then get the deposit counts
+they would get after that certificate.
+
+```bash
+./recovery-tx/certificate-to-move.sh exit-certificate-signed.json > move.sh
+./recovery-tx/run.sh move.sh
+```
+
+The generated `move.sh` replays every bridge exit of the certificate, in the certificate's order and
+one per block, and fails unless each exit gets the next deposit count and the bridge ends with the
+certificate's `new_local_exit_root` (`getRoot()`). It runs in the same sandbox as any other
+`move.sh`: only transactions from impersonated accounts, no state cheat codes.
+
+|                    Exit                     |                             Who sends it                             |                                           With which funds                                           |
+| :-----------------------------------------: | :------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------: |
+|                 `Transfer`                  |           the exit's `dest_address` (the holder on the L2)           | its own: ETH as the value, a wrapped token is burned, a token of the L2 itself is approved and locked |
+|                  `Message`                  | the exit's `token_info.origin_token_address` (who sent the message)  |                               its own ETH, if the message carries any                                |
+| any exit of an address given with `--fund`  |                               the same                               |      the bridge gives it the exit's amount first (ETH of its reserve, or a mint of the wrapped token) |
+
+- `--fund <address>` (repeatable) is for a sender that does not hold the funds on the L2, such as the
+  `exitAddress` of the tool's SC-locked exits (the funds stay in the contracts). Without it such an
+  exit fails. It is not possible for a token of the L2 itself (the bridge cannot mint it).
+- `--metadata <file>` gives the raw metadata of the `Message` exits (the certificate only has its
+  hash): the tool's `step-g-new-local-exit-root.json`, or a JSON array of 0x-hex strings, aligned
+  with the certificate's `bridge_exits`. A `Message` without it, or whose metadata does not hash to
+  the certificate's value, is refused.
+- `BRIDGE_ADDRESS` overrides the bridge (default: the zkEVM bridge).
+- The fork must be at the state right before the certificate. The certificate's
+  `imported_bridge_exits` are not read. ETH is taken to be the L2's gas token.
+- **With `submission/verify.sh`**: `verify.sh` runs each case on the latest archived Anvil state
+  (`metadata/anvil-state.json` of the latest run). For the run of a certificate that no case's
+  `move.sh` produced (the initial one), that state is the fork after this replay: dump it with
+  `anvil_dumpState` (as `submission/helpers/generate.sh` does for `STATE_OUT`) and store it as that
+  run's `metadata/anvil-state.json`. The cases verified afterwards then get the deposit counts that
+  follow the certificate's exits.
+- It sends one transaction per block and waits for each: a large certificate needs a higher
+  `SANDBOX_TIMEOUT` (see `recovery-tx/run.sh`).
 
 ## Support
 
