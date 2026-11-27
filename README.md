@@ -285,19 +285,27 @@ every signature and compares all of it with `manifest.json`.
 
 Runs `verify-submission.sh`, then applies the case on top of the recoveries already processed. It
 takes the run with the highest height in the archive (`STATE_URI`, default
-`gs://polygonlabs-zkevm-prod-let-archive/runs`, folder `<STATE_NETWORK_ID>/<height>`, the layout of
-aggkit's `exit_certificate` archive) and its Anvil state dump (`STATE_FILE`, default
-`anvil-state.json`, checked against the run's `archive-manifest.json`). It re-runs the case on a
+`gs://polygonlabs-zkevm-prod-let-archive/runs`, runs at `<STATE_URI>/<height>/`, the layout of
+aggkit's `exit_certificate` archive; `STATE_NETWORK_ID` adds a network folder in between) and its
+Anvil state dump (`STATE_FILE`, default `metadata/anvil-state.json`, which the exit tool stores
+among its metadata files; checked against the run's `archive-manifest.json`). It re-runs the case on a
 fork that loads that state (`move.sh` must still give exactly `recovery.json`) and writes, to
 `--out-dir` (default `verify-out/<case-id>`):
 
 - `recovery-verify.json` — `recovery.json` with the `deposit_count` of each output on that state,
   plus `"metadata": {"case_hash": ...}` (the case hash the signatures cover);
-- `anvil-state-<id>.json` — the state after `move.sh`, for the next case once archived (nothing is
-  uploaded); `<id>` is the first 8 bytes of the case hash (16 hex chars).
+- `anvil-state-<id>.json` — the state after `move.sh`, for the next case once archived; `<id>` is
+  the first 8 bytes of the case hash (16 hex chars).
 
-It needs `gcloud` with read access to the bucket, `zstd`, `xxd` and `gzip`. Exit codes as
-`verify-submission.sh`.
+The very first submission has no previous state: with an empty archive, pass
+`--no-previous-state` (refused if the archive already has runs). `--upload` stores the result as
+the next run (`<latest height + 1>`, 1 for the first) in the same layout — `<STATE_FILE>.zst` and
+`recovery-verify.json.zst` next to it, then `archive-manifest.json` last (with `case_id`,
+`case_hash`, `previous_run`) — write-once: an existing run is never overwritten. Without
+`--upload` nothing is uploaded.
+
+It needs `gcloud` (read access to the bucket; object create for `--upload`), `zstd`, `xxd`, `gzip`
+and `perl`. Exit codes as `verify-submission.sh`.
 
 ### Running the shadow-fork by hand (optional)
 

@@ -38,7 +38,10 @@
     `archive-manifest.json`): it must pick the latest run, write `recovery-verify.json` (the packaged
     `recovery.json` with deposit counts moved by 2 and the case hash) and an `anvil-state-<first 8 bytes of the case hash>.json` that loads
     back with the deposits and funds of `move.sh`. An incomplete latest run (no manifest) and a dump that
-    differs from its manifest are refused.
+    differs from its manifest are refused. Then, on an empty archive: `--no-previous-state --upload`
+    stores run 1 (state and `recovery-verify.json` under `metadata/`, manifest with the case), the next
+    package with `--upload` loads it and stores run 2 (`previous_run` 1, deposit counts following);
+    `--no-previous-state` on a non-empty archive and an empty archive without it are refused.
 
 Negative cases: non-owner `execute` reverts; missing owner signature makes `list-impersonated.sh`
 fail; `sign-message.sh` rejects `--private-key`; a forged signature does not verify; `prepare-submission.sh`

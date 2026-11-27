@@ -216,6 +216,8 @@ echo "Starting the shadow-fork (setup/fork.sh) on port ${fork_port}; it is stopp
 fork_container="zkevm-shadow-fork-${fork_port}"
 trap stop_fork EXIT
 trap 'exit 130' INT TERM
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000' 2>/dev/null || echo $(($(date +%s) * 1000)); }
+fork_t0="$(now_ms)"
 ANVIL_PORT="${fork_port}" FORK_LOG="${FORK_LOG}" "${repo_root}/setup/fork.sh" >/dev/null 2>&1 &
 fork_pid=$!
 fork_wait=0
@@ -227,7 +229,8 @@ until rpc_answers; do
     fi
     sleep 1
 done
-echo "Fork is up at ${RPC_URL}."
+fork_ms=$(($(now_ms) - fork_t0))
+echo "Fork is up at ${RPC_URL} after $((fork_ms / 1000)).$(printf '%03d' $((fork_ms % 1000)))s${LOAD_STATE:+ (loading the state ${LOAD_STATE##*/})}."
 [ -f "${FORK_LOG}" ] || die "${FORK_LOG} not found — the fork did not write its log."
 
 halt_block="$(sed -n 's/^halt_block=\([0-9]*\)$/\1/p' "${repo_root}/setup/fork.sh")"

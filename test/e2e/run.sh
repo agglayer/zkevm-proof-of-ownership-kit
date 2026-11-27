@@ -764,17 +764,17 @@ stop_test_fork() {
     wait "${fork_pid}" 2>/dev/null || true
     fork_pid=""
 }
-archive_run() { # <height>: dump the running fork into ${ARCHIVE}/1/<height>/
+archive_run() { # <height>: dump the running fork into ${ARCHIVE}/<height>/metadata/
     local dir hex
-    dir="${ARCHIVE}/1/$(printf '%010d' "$1")"
-    mkdir -p "${dir}"
+    dir="${ARCHIVE}/$(printf '%010d' "$1")"
+    mkdir -p "${dir}/metadata"
     hex="$(cast rpc anvil_dumpState --rpc-url "${RPC_URL}" | jq -r .)"
     printf '%s' "${hex#0x}" | xxd -r -p | gzip -dc >"${WORKDIR}/state.json"
-    zstd -q -f "${WORKDIR}/state.json" -o "${dir}/anvil-state.json.zst"
+    zstd -q -f "${WORKDIR}/state.json" -o "${dir}/metadata/anvil-state.json.zst"
     jq -n --arg sha "$(sha256_file "${WORKDIR}/state.json")" --argjson size "$(wc -c <"${WORKDIR}/state.json" | tr -d ' ')" \
-        --argjson osize "$(wc -c <"${dir}/anvil-state.json.zst" | tr -d ' ')" \
-        '{version: 1, compression: "zstd", files: [{path: "anvil-state.json", size: $size, sha256: $sha,
-          object: "anvil-state.json.zst", objectSize: $osize, objectCrc32c: 0}]}' >"${dir}/archive-manifest.json"
+        --argjson osize "$(wc -c <"${dir}/metadata/anvil-state.json.zst" | tr -d ' ')" \
+        '{version: 1, compression: "zstd", files: [{path: "metadata/anvil-state.json", size: $size, sha256: $sha,
+          object: "metadata/anvil-state.json.zst", objectSize: $osize, objectCrc32c: 0}]}' >"${dir}/archive-manifest.json"
 }
 sha256_file() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'; }
 deposit_count() { cast call "${BRIDGE}" "depositCount()(uint32)" --rpc-url "${RPC_URL}"; }
@@ -787,7 +787,7 @@ for _ in 1 2; do
 done
 [ "$(deposit_count)" = "$((D0 + 2))" ] || fail "the extra deposits did not land on the archive fork"
 archive_run 2
-mkdir -p "${ARCHIVE}/1/notes"   # not a height: ignored
+mkdir -p "${ARCHIVE}/notes"   # not a height: ignored
 stop_test_fork
 
 vfy() { # <tgz> <out dir> [extra args]
@@ -816,16 +816,16 @@ stop_test_fork
 echo "  ${NEW_STATE##*/} loads back with the deposits and funds of move.sh"
 # Negative: a newer run without archive-manifest.json (incomplete), then a dump that does not
 # match its manifest.
-mkdir -p "${ARCHIVE}/1/0000000003"
+mkdir -p "${ARCHIVE}/0000000003"
 expect_fail "verify.sh refuses an incomplete latest run" vfy "${PKG}" "${WORKDIR}/vfy-neg" --allow-test-fork
 grep -q "the run is incomplete" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the incomplete-run message"; }
-cp "${ARCHIVE}/1/0000000002/archive-manifest.json" "${ARCHIVE}/1/0000000003/"
-cp "${ARCHIVE}/1/0000000001/anvil-state.json.zst" "${ARCHIVE}/1/0000000003/"
+cp "${ARCHIVE}/0000000002/archive-manifest.json" "${ARCHIVE}/0000000003/"
+cp -r "${ARCHIVE}/0000000001/metadata" "${ARCHIVE}/0000000003/"
 expect_fail "verify.sh refuses a state dump that differs from its manifest" vfy "${PKG}" "${WORKDIR}/vfy-neg" --allow-test-fork
 grep -q "differs from archive-manifest.json" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the manifest mismatch message"; }
 # Chained: archive the state verify.sh wrote as run 3, then the next case (the token package)
 # starts from it: its deposit counts follow the main case's.
-rm -rf "${ARCHIVE}/1/0000000003"
+rm -rf "${ARCHIVE}/0000000003"
 start_test_fork LOAD_STATE="${NEW_STATE}"
 archive_run 3
 stop_test_fork
@@ -835,6 +835,42 @@ grep -q "^VERIFIED AND APPLIED ON THE LATEST STATE (height 3)" "${WORKDIR}/vfy-t
 jq -e --argjson d "$((D0 + 4))" '[.outputs[].deposit_count] == [$d, $d + 1]' "${WORKDIR}/vfy-tokens/recovery-verify.json" >/dev/null \
     || { cat "${WORKDIR}/vfy-tokens/recovery-verify.json" >&2; fail "unexpected deposit counts for the chained case"; }
 echo "  chained: the next case starts from the archived state (deposit counts $((D0 + 4)), $((D0 + 5)))"
+# --no-previous-state and --upload: the first submission on an empty archive stores run 1, the
+# next one loads it and stores run 2.
+EMPTY="${WORKDIR}/archive-empty"
+mkdir -p "${EMPTY}"
+vfy_up() { # <tgz> <out dir> [extra args]: verify.sh on the archive EMPTY, with --upload
+    local f="$1" o="$2"
+    shift 2
+    STATE_URI="${EMPTY}" fork_env "${repo_root}/submission/verify.sh" "${f}" --out-dir "${o}" --upload "$@" </dev/null
+}
+expect_fail "verify.sh refuses an empty archive without --no-previous-state" \
+    vfy_up "${PKG}" "${WORKDIR}/vfy-up0" --allow-test-fork
+grep -q "run again with --no-previous-state" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the --no-previous-state hint"; }
+[ -z "$(ls -A "${EMPTY}")" ] || fail "a refused verify.sh must not store anything"
+vfy_up "${PKG}" "${WORKDIR}/vfy-up1" --no-previous-state --allow-test-fork >"${WORKDIR}/vfy-up1.out" 2>&1 \
+    || { cat "${WORKDIR}/vfy-up1.out" >&2; fail "verify.sh --no-previous-state --upload failed"; }
+grep -q "^VERIFIED AND APPLIED ON THE PLAIN FORK (first submission)" "${WORKDIR}/vfy-up1.out" || { cat "${WORKDIR}/vfy-up1.out" >&2; fail "expected the plain fork"; }
+for f in archive-manifest.json metadata/anvil-state.json.zst metadata/recovery-verify.json.zst; do
+    [ -f "${EMPTY}/0000000001/${f}" ] || fail "run 1 lacks ${f}"
+done
+jq -e --arg h "$("${repo_root}/ownership-proof/case-hash.sh" "${CASE_DIR}")" \
+    '.version == 1 and .compression == "zstd" and .info.case_hash == $h and .info.previous_run == ""
+     and ([.files[].path] == ["metadata/anvil-state.json", "metadata/recovery-verify.json"])' \
+    "${EMPTY}/0000000001/archive-manifest.json" >/dev/null || { cat "${EMPTY}/0000000001/archive-manifest.json" >&2; fail "unexpected run 1 manifest"; }
+zstd -q -d -c "${EMPTY}/0000000001/metadata/recovery-verify.json.zst" | jq -e --argjson d "${D0}" '[.outputs[].deposit_count] == [$d, $d + 1]' >/dev/null \
+    || fail "run 1: unexpected deposit counts (plain fork)"
+echo "  --no-previous-state --upload: run 1 stored from the plain fork"
+expect_fail "verify.sh refuses --no-previous-state on an archive with runs" \
+    vfy_up "${PKG_TOKENS}" "${WORKDIR}/vfy-up2" --no-previous-state --allow-test-fork
+grep -q "only for the first submission" "${WORKDIR}/neg.out" || { cat "${WORKDIR}/neg.out" >&2; fail "expected the first-submission message"; }
+vfy_up "${PKG_TOKENS}" "${WORKDIR}/vfy-up2" --allow-test-fork >"${WORKDIR}/vfy-up2.out" 2>&1 \
+    || { cat "${WORKDIR}/vfy-up2.out" >&2; fail "verify.sh --upload on run 1 failed"; }
+grep -q "^VERIFIED AND APPLIED ON THE LATEST STATE (height 1)" "${WORKDIR}/vfy-up2.out" || { cat "${WORKDIR}/vfy-up2.out" >&2; fail "expected run 1"; }
+jq -e '.info.previous_run == "1"' "${EMPTY}/0000000002/archive-manifest.json" >/dev/null || fail "run 2 does not chain on run 1"
+zstd -q -d -c "${EMPTY}/0000000002/metadata/recovery-verify.json.zst" | jq -e --argjson d "$((D0 + 2))" '[.outputs[].deposit_count] == [$d, $d + 1]' >/dev/null \
+    || fail "run 2: unexpected deposit counts"
+echo "  --upload: run 2 loads run 1 and is stored next to it"
 
 # Negative: a file changed after packaging (hash mismatch), a manifest that lies about the
 # nonce (hashes fine), and a path-traversal entry.

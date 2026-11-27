@@ -122,14 +122,16 @@ plain and step-by-step.
   (recovery.json, impersonated senders, signatures) and compares outputs, balances, nonce,
   fork block and senders with `manifest.json` (not tx hashes/gas). The packaged `move.sh`
   runs in the sandbox (see the invariants). `verify.sh <tgz>` (Polygon side) runs `verify-submission.sh`,
-  then takes the highest-height run under `<STATE_URI>/<STATE_NETWORK_ID>/` (aggkit `exit_certificate`
-  archive layout: 10-digit heights, `<path>.zst` objects, `archive-manifest.json` with size/sha256;
-  `STATE_URI` gs:// via gcloud or a local dir), loads its Anvil dump (`STATE_FILE`) into the fork
+  then takes the highest-height run under `<STATE_URI>/[<STATE_NETWORK_ID>/]` (aggkit `exit_certificate`
+  archive layout: `runs/<10-digit height>/`, `<path>.zst` objects, `archive-manifest.json` with size/sha256;
+  `STATE_URI` gs:// via gcloud or a local dir), loads its Anvil dump (`STATE_FILE`, default
+  `metadata/anvil-state.json`; none with `--no-previous-state`, only for an empty archive) into the fork
   (`setup/fork.sh` `LOAD_STATE`), re-runs the case with `generate.sh` (`STATE_OUT`,
   `DEPOSIT_COUNTS_OUT` → `build-recovery.sh`) and writes `recovery-verify.json` (recovery.json +
   per-output `deposit_count` + top-level `metadata.case_hash`) and the new `anvil-state-<first 8 bytes
-  of the case hash>.json`; it
-  never uploads. `SUBMIT.md` says what the stakeholder sends back to Polygon (the `.tgz`, plus the email) and what is in it.
+  of the case hash>.json`. `--upload` stores them as run `<latest + 1>` (manifest last, write-once:
+  gcloud `--if-generation-match=0`); without it nothing is uploaded. `generate.sh` prints how long
+  the fork took to come up. `SUBMIT.md` says what the stakeholder sends back to Polygon (the `.tgz`, plus the email) and what is in it.
 - `test/e2e/` — end-to-end test (geth `--dev` in Docker + `setup/fork.sh` + a whole case through
   `prepare-submission.sh`), run by `.github/workflows/e2e.yml`.
 
